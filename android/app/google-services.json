@@ -1,0 +1,29 @@
+{
+  "project_info": {
+    "project_number": "340706046311",
+    "project_id": "toocoob",
+    "storage_bucket": "toocoob.firebasestorage.app"
+  },
+  "client": [
+    {
+      "client_info": {
+        "mobilesdk_app_id": "1:340706046311:android:28f62006f32f00ecc73fc2",
+        "android_client_info": {
+          "package_name": "com.example.toocoob"
+        }
+      },
+      "oauth_client": [],
+      "api_key": [
+        {
+          "current_key": "AIzaSyAPH-sEvTujoUSAUq0cgDLy11EaJmqG3kU"
+        }
+      ],
+      "services": {
+        "appinvite_service": {
+          "other_platform_oauth_client": []
+        }
+      }
+    }
+  ],
+  "configuration_version": "1"
+}

@@ -1,0 +1,45 @@
+name: toocoob
+description: A new Flutter project
+
+publish_to: 'none'
+
+version: 1.0.0+1
+
+environment:
+  sdk: ">=3.0.0 <4.0.0"
+
+dependencies:
+  flutter:
+    sdk: flutter
+  cupertino_icons: ^1.0.2
+  image_picker: ^1.0.0
+  cloud_firestore: ^6.1.2
+  firebase_core: ^4.4.0
+  firebase_storage: ^13.0.6
+  shared_preferences: ^2.2.0
+
+
+dev_dependencies:
+  flutter_test:
+    sdk: flutter
+  flutter_lints: ^2.0.0
+
+flutter:
+  uses-material-design: true
+  assets:
+    - assets/logo.png
+    - assets/13.jpg
+    - assets/5.jpg
+    - assets/muushig.jpg
+    - assets/buur.jpg
+    - assets/108.jpg
+    - assets/daaluu.jpg
+    - assets/nvx.jpg
+    - assets/durak.jpg
+    - assets/501.jpg
+    - assets/canasta.jpg
+    - assets/21.jpg
+    - assets/all kinds.jpg
+    - assets/a kind.jpg
+    - assets/one time.jpg
+    
