@@ -13,33 +13,38 @@ class PlayingFormatPage extends StatelessWidget {
         title: const Text('Тоглолтын хэлбэр'),
         elevation: 0,
       ),
-      body: Row(
-        children: [
-          Expanded(
-            child: _buildFormatButton(
-              context,
-              'Олон\nтөрөлт',
-              Colors.deepPurple,
-              'assets/all kinds.jpg',
+      body: Padding(
+        padding: const EdgeInsets.all(12),
+        child: Column(
+          children: [
+            Expanded(
+              child: _buildFormatButton(
+                context,
+                'Олон төрөлт',
+                Colors.deepPurple,
+                'assets/all kinds.jpg',
+              ),
             ),
-          ),
-          Expanded(
-            child: _buildFormatButton(
-              context,
-              'Нэг төрлөөр\nтойрох',
-              Colors.blue,
-              'assets/a kind.jpg',
+            const SizedBox(height: 12),
+            Expanded(
+              child: _buildFormatButton(
+                context,
+                'Нэг төрлөөр тойрох',
+                Colors.blue,
+                'assets/a kind.jpg',
+              ),
             ),
-          ),
-          Expanded(
-            child: _buildFormatButton(
-              context,
-              'Галзуу\nганц',
-              Colors.deepOrange,
-              'assets/one time.jpg',
+            const SizedBox(height: 12),
+            Expanded(
+              child: _buildFormatButton(
+                context,
+                'Галзуу ганц',
+                Colors.deepOrange,
+                'assets/one time.jpg',
+              ),
             ),
-          ),
-        ],
+          ],
+        ),
       ),
     );
   }
@@ -73,13 +78,13 @@ class PlayingFormatPage extends StatelessWidget {
             decoration: BoxDecoration(
               borderRadius: BorderRadius.circular(12),
             ),
-            child: Column(
+            child: Row(
               children: [
                 if (imagePath != null)
                   Expanded(
                     flex: 2,
                     child: Padding(
-                      padding: const EdgeInsets.all(8.0),
+                      padding: const EdgeInsets.all(12.0),
                       child: Image.asset(
                         imagePath,
                         fit: BoxFit.contain,
@@ -87,33 +92,17 @@ class PlayingFormatPage extends StatelessWidget {
                     ),
                   ),
                 Expanded(
-                  flex: 1,
-                  child: Container(
-                    decoration: BoxDecoration(
-                      borderRadius: const BorderRadius.only(
-                        bottomLeft: Radius.circular(12),
-                        bottomRight: Radius.circular(12),
-                      ),
-                      gradient: LinearGradient(
-                        begin: Alignment.topCenter,
-                        end: Alignment.bottomCenter,
-                        colors: [
-                          Colors.black.withOpacity(0.3),
-                          Colors.black.withOpacity(0.7),
-                        ],
-                      ),
-                    ),
-                    child: Center(
-                      child: Padding(
-                        padding: const EdgeInsets.all(8.0),
-                        child: Text(
-                          title,
-                          textAlign: TextAlign.center,
-                          style: const TextStyle(
-                            fontSize: 50,
-                            fontWeight: FontWeight.bold,
-                            color: Colors.white,
-                          ),
+                  flex: 3,
+                  child: Center(
+                    child: Padding(
+                      padding: const EdgeInsets.all(16.0),
+                      child: Text(
+                        title,
+                        textAlign: TextAlign.center,
+                        style: const TextStyle(
+                          fontSize: 50,
+                          fontWeight: FontWeight.bold,
+                          color: Colors.white,
                         ),
                       ),
                     ),

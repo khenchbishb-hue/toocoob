@@ -61,56 +61,114 @@ class _PlayerSelectionPageState extends State<PlayerSelectionPage> {
             ),
         ],
         bottom: PreferredSize(
-          preferredSize: const Size.fromHeight(96),
+          preferredSize: const Size.fromHeight(150),
           child: Padding(
             padding: const EdgeInsets.only(bottom: 12),
             child: Column(
               mainAxisSize: MainAxisSize.min,
               children: [
-                Text(
-                  'Сонгогдсон: ${_selectedUsers.length}',
-                  style: const TextStyle(
-                    fontSize: 16,
-                    fontWeight: FontWeight.bold,
+                // Navigation buttons row
+                SingleChildScrollView(
+                  scrollDirection: Axis.horizontal,
+                  child: Row(
+                    children: [
+                      Padding(
+                        padding: const EdgeInsets.symmetric(horizontal: 4),
+                        child: ElevatedButton.icon(
+                          onPressed: () => Navigator.pop(context),
+                          icon: const Icon(Icons.home, size: 18),
+                          label: const Text('Нүүр'),
+                          style: ElevatedButton.styleFrom(
+                            padding: const EdgeInsets.symmetric(
+                              horizontal: 12,
+                              vertical: 8,
+                            ),
+                            backgroundColor: Colors.deepPurple[300],
+                          ),
+                        ),
+                      ),
+                      Padding(
+                        padding: const EdgeInsets.symmetric(horizontal: 4),
+                        child: ElevatedButton.icon(
+                          onPressed: () {},
+                          icon: const Icon(Icons.sports_esports, size: 18),
+                          label: const Text('Тоглоомууд'),
+                          style: ElevatedButton.styleFrom(
+                            padding: const EdgeInsets.symmetric(
+                              horizontal: 12,
+                              vertical: 8,
+                            ),
+                            backgroundColor: Colors.deepPurple[300],
+                          ),
+                        ),
+                      ),
+                      Padding(
+                        padding: const EdgeInsets.symmetric(horizontal: 4),
+                        child: ElevatedButton.icon(
+                          onPressed: () {},
+                          icon: const Icon(Icons.leaderboard, size: 18),
+                          label: const Text('Ранк'),
+                          style: ElevatedButton.styleFrom(
+                            padding: const EdgeInsets.symmetric(
+                              horizontal: 12,
+                              vertical: 8,
+                            ),
+                            backgroundColor: Colors.deepPurple[300],
+                          ),
+                        ),
+                      ),
+                    ],
                   ),
                 ),
-                const SizedBox(height: 10),
-                ElevatedButton.icon(
-                  onPressed: _selectedUsers.isNotEmpty
-                      ? () {
-                          if (widget.isAddingMode) {
-                            // Нэмэх горимд - буцаад өгөх
-                            Navigator.pop(context, _selectedUsers.toList());
-                          } else {
-                            // Энгийн горимд - PlayingFormatPage рүү явах
-                            Navigator.push(
-                              context,
-                              MaterialPageRoute(
-                                builder: (context) => PlayingFormatPage(
-                                  selectedUserIds: _selectedUsers.toList(),
-                                ),
-                              ),
-                            );
-                          }
-                        }
-                      : null,
-                  icon: const Icon(Icons.play_arrow, color: Colors.black),
-                  label: const Text(
-                    'Ширээнд урих',
-                    style: TextStyle(
-                      color: Colors.black,
-                      fontSize: 16,
-                      fontWeight: FontWeight.bold,
+                const SizedBox(height: 12),
+                Row(
+                  mainAxisAlignment: MainAxisAlignment.spaceBetween,
+                  children: [
+                    Text(
+                      'Сонгогдсон: ${_selectedUsers.length}',
+                      style: const TextStyle(
+                        fontSize: 16,
+                        fontWeight: FontWeight.bold,
+                      ),
                     ),
-                  ),
-                  style: ElevatedButton.styleFrom(
-                    padding: const EdgeInsets.symmetric(
-                      horizontal: 28,
-                      vertical: 10,
+                    ElevatedButton.icon(
+                      onPressed: _selectedUsers.isNotEmpty
+                          ? () {
+                              if (widget.isAddingMode) {
+                                // Нэмэх горимд - буцаад өгөх
+                                Navigator.pop(context, _selectedUsers.toList());
+                              } else {
+                                // Энгийн горимд - PlayingFormatPage рүү явах
+                                Navigator.push(
+                                  context,
+                                  MaterialPageRoute(
+                                    builder: (context) => PlayingFormatPage(
+                                      selectedUserIds: _selectedUsers.toList(),
+                                    ),
+                                  ),
+                                );
+                              }
+                            }
+                          : null,
+                      icon: const Icon(Icons.play_arrow, color: Colors.black),
+                      label: const Text(
+                        'Ширээнд урих',
+                        style: TextStyle(
+                          color: Colors.black,
+                          fontSize: 14,
+                          fontWeight: FontWeight.bold,
+                        ),
+                      ),
+                      style: ElevatedButton.styleFrom(
+                        padding: const EdgeInsets.symmetric(
+                          horizontal: 16,
+                          vertical: 8,
+                        ),
+                        backgroundColor: Colors.yellow,
+                        disabledBackgroundColor: Colors.grey[300],
+                      ),
                     ),
-                    backgroundColor: Colors.yellow,
-                    disabledBackgroundColor: Colors.grey[300],
-                  ),
+                  ],
                 ),
               ],
             ),
@@ -160,9 +218,9 @@ class _PlayerSelectionPageState extends State<PlayerSelectionPage> {
                   padding: const EdgeInsets.all(16),
                   gridDelegate: const SliverGridDelegateWithFixedCrossAxisCount(
                     crossAxisCount: 7,
-                    crossAxisSpacing: 16,
-                    mainAxisSpacing: 16,
-                    childAspectRatio: 0.65,
+                    crossAxisSpacing: 12,
+                    mainAxisSpacing: 12,
+                    childAspectRatio: 1.0,
                   ),
                   itemCount: users.length,
                   itemBuilder: (context, index) {
@@ -178,27 +236,27 @@ class _PlayerSelectionPageState extends State<PlayerSelectionPage> {
                     return GestureDetector(
                       onTap: isExcluded ? null : () => _toggleSelection(userId),
                       child: Opacity(
-                        opacity: isExcluded ? 0.3 : 1.0,
-                        child: Stack(
-                          alignment: Alignment.bottomCenter,
-                          children: [
-                            Container(
-                              decoration: BoxDecoration(
-                                border: isSelected
-                                    ? Border.all(
-                                        color: Colors.deepPurple,
-                                        width: 3,
-                                      )
-                                    : isExcluded
-                                        ? Border.all(
-                                            color: Colors.grey,
-                                            width: 2,
-                                          )
-                                        : null,
-                                borderRadius: BorderRadius.circular(200),
-                              ),
-                              child: CircleAvatar(
-                                radius: 140,
+                        opacity: isExcluded ? 0.4 : 1.0,
+                        child: Container(
+                          decoration: BoxDecoration(
+                            color: isSelected
+                                ? Colors.yellow[200]
+                                : Colors.transparent,
+                            shape: BoxShape.circle,
+                            border: Border.all(
+                              color: isSelected
+                                  ? Colors.deepPurple
+                                  : isExcluded
+                                      ? Colors.grey[400]!
+                                      : Colors.deepPurple[200]!,
+                              width: isSelected ? 3 : 2,
+                            ),
+                          ),
+                          padding: const EdgeInsets.all(4),
+                          child: Stack(
+                            alignment: Alignment.center,
+                            children: [
+                              CircleAvatar(
                                 backgroundColor: Colors.deepPurple[100],
                                 backgroundImage:
                                     photoUrl != null && photoUrl.isNotEmpty
@@ -209,80 +267,28 @@ class _PlayerSelectionPageState extends State<PlayerSelectionPage> {
                                         : null,
                                 child: photoUrl == null || photoUrl.isEmpty
                                     ? const Icon(Icons.person,
-                                        size: 50, color: Colors.deepPurple)
+                                        size: 24, color: Colors.deepPurple)
                                     : null,
                               ),
-                            ),
-                            if (isSelected)
-                              Positioned(
-                                top: 0,
-                                right: 0,
-                                child: Container(
-                                  decoration: BoxDecoration(
-                                    color: Colors.deepPurple,
-                                    borderRadius: BorderRadius.circular(50),
-                                  ),
-                                  padding: const EdgeInsets.all(6),
-                                  child: const Icon(
-                                    Icons.check,
-                                    color: Colors.white,
-                                    size: 24,
-                                  ),
-                                ),
-                              ),
-                            if (isExcluded)
-                              Positioned(
-                                top: 0,
-                                right: 0,
-                                child: Container(
-                                  decoration: BoxDecoration(
-                                    color: Colors.red,
-                                    borderRadius: BorderRadius.circular(50),
-                                  ),
-                                  padding: const EdgeInsets.all(6),
-                                  child: const Icon(
-                                    Icons.block,
-                                    color: Colors.white,
-                                    size: 24,
-                                  ),
-                                ),
-                              ),
-                            Container(
-                              margin: const EdgeInsets.only(bottom: 8),
-                              padding: const EdgeInsets.symmetric(
-                                  horizontal: 12, vertical: 8),
-                              decoration: BoxDecoration(
-                                color: Colors.black87,
-                                borderRadius: BorderRadius.circular(12),
-                              ),
-                              child: Column(
-                                mainAxisSize: MainAxisSize.min,
-                                children: [
-                                  Text(
-                                    displayName,
-                                    style: const TextStyle(
-                                      fontSize: 14,
-                                      fontWeight: FontWeight.bold,
+                              if (isSelected)
+                                Positioned(
+                                  bottom: 0,
+                                  right: 0,
+                                  child: Container(
+                                    decoration: const BoxDecoration(
+                                      color: Colors.green,
+                                      shape: BoxShape.circle,
+                                    ),
+                                    padding: const EdgeInsets.all(3),
+                                    child: const Icon(
+                                      Icons.check,
                                       color: Colors.white,
+                                      size: 14,
                                     ),
-                                    textAlign: TextAlign.center,
-                                    maxLines: 1,
-                                    overflow: TextOverflow.ellipsis,
                                   ),
-                                  Text(
-                                    '@$username',
-                                    style: const TextStyle(
-                                      fontSize: 11,
-                                      color: Colors.grey,
-                                    ),
-                                    textAlign: TextAlign.center,
-                                    maxLines: 1,
-                                    overflow: TextOverflow.ellipsis,
-                                  ),
-                                ],
-                              ),
-                            ),
-                          ],
+                                ),
+                            ],
+                          ),
                         ),
                       ),
                     );
