@@ -61,114 +61,55 @@ class _PlayerSelectionPageState extends State<PlayerSelectionPage> {
             ),
         ],
         bottom: PreferredSize(
-          preferredSize: const Size.fromHeight(150),
+          preferredSize: const Size.fromHeight(60),
           child: Padding(
             padding: const EdgeInsets.only(bottom: 12),
-            child: Column(
-              mainAxisSize: MainAxisSize.min,
+            child: Row(
+              mainAxisAlignment: MainAxisAlignment.spaceBetween,
               children: [
-                // Navigation buttons row
-                SingleChildScrollView(
-                  scrollDirection: Axis.horizontal,
-                  child: Row(
-                    children: [
-                      Padding(
-                        padding: const EdgeInsets.symmetric(horizontal: 4),
-                        child: ElevatedButton.icon(
-                          onPressed: () => Navigator.pop(context),
-                          icon: const Icon(Icons.home, size: 18),
-                          label: const Text('Нүүр'),
-                          style: ElevatedButton.styleFrom(
-                            padding: const EdgeInsets.symmetric(
-                              horizontal: 12,
-                              vertical: 8,
-                            ),
-                            backgroundColor: Colors.deepPurple[300],
-                          ),
-                        ),
-                      ),
-                      Padding(
-                        padding: const EdgeInsets.symmetric(horizontal: 4),
-                        child: ElevatedButton.icon(
-                          onPressed: () {},
-                          icon: const Icon(Icons.sports_esports, size: 18),
-                          label: const Text('Тоглоомууд'),
-                          style: ElevatedButton.styleFrom(
-                            padding: const EdgeInsets.symmetric(
-                              horizontal: 12,
-                              vertical: 8,
-                            ),
-                            backgroundColor: Colors.deepPurple[300],
-                          ),
-                        ),
-                      ),
-                      Padding(
-                        padding: const EdgeInsets.symmetric(horizontal: 4),
-                        child: ElevatedButton.icon(
-                          onPressed: () {},
-                          icon: const Icon(Icons.leaderboard, size: 18),
-                          label: const Text('Ранк'),
-                          style: ElevatedButton.styleFrom(
-                            padding: const EdgeInsets.symmetric(
-                              horizontal: 12,
-                              vertical: 8,
-                            ),
-                            backgroundColor: Colors.deepPurple[300],
-                          ),
-                        ),
-                      ),
-                    ],
+                Text(
+                  'Сонгогдсон: ${_selectedUsers.length}',
+                  style: const TextStyle(
+                    fontSize: 16,
+                    fontWeight: FontWeight.bold,
                   ),
                 ),
-                const SizedBox(height: 12),
-                Row(
-                  mainAxisAlignment: MainAxisAlignment.spaceBetween,
-                  children: [
-                    Text(
-                      'Сонгогдсон: ${_selectedUsers.length}',
-                      style: const TextStyle(
-                        fontSize: 16,
-                        fontWeight: FontWeight.bold,
-                      ),
+                ElevatedButton.icon(
+                  onPressed: _selectedUsers.isNotEmpty
+                      ? () {
+                          if (widget.isAddingMode) {
+                            // Нэмэх горимд - буцаад өгөх
+                            Navigator.pop(context, _selectedUsers.toList());
+                          } else {
+                            // Энгийн горимд - PlayingFormatPage рүү явах
+                            Navigator.push(
+                              context,
+                              MaterialPageRoute(
+                                builder: (context) => PlayingFormatPage(
+                                  selectedUserIds: _selectedUsers.toList(),
+                                ),
+                              ),
+                            );
+                          }
+                        }
+                      : null,
+                  icon: const Icon(Icons.play_arrow, color: Colors.black),
+                  label: const Text(
+                    'Ширээнд урих',
+                    style: TextStyle(
+                      color: Colors.black,
+                      fontSize: 14,
+                      fontWeight: FontWeight.bold,
                     ),
-                    ElevatedButton.icon(
-                      onPressed: _selectedUsers.isNotEmpty
-                          ? () {
-                              if (widget.isAddingMode) {
-                                // Нэмэх горимд - буцаад өгөх
-                                Navigator.pop(context, _selectedUsers.toList());
-                              } else {
-                                // Энгийн горимд - PlayingFormatPage рүү явах
-                                Navigator.push(
-                                  context,
-                                  MaterialPageRoute(
-                                    builder: (context) => PlayingFormatPage(
-                                      selectedUserIds: _selectedUsers.toList(),
-                                    ),
-                                  ),
-                                );
-                              }
-                            }
-                          : null,
-                      icon: const Icon(Icons.play_arrow, color: Colors.black),
-                      label: const Text(
-                        'Ширээнд урих',
-                        style: TextStyle(
-                          color: Colors.black,
-                          fontSize: 14,
-                          fontWeight: FontWeight.bold,
-                        ),
-                      ),
-                      style: ElevatedButton.styleFrom(
-                        padding: const EdgeInsets.symmetric(
-                          horizontal: 16,
-                          vertical: 8,
-                        ),
-                        backgroundColor: Colors.yellow,
-                        disabledBackgroundColor: Colors.grey[300],
-                      ),
+                  ),
+                  style: ElevatedButton.styleFrom(
+                    padding: const EdgeInsets.symmetric(
+                      horizontal: 16,
+                      vertical: 8,
                     ),
-                  ],
+                    backgroundColor: Colors.yellow,
+                    disabledBackgroundColor: Colors.grey[300],
+                  ),
                 ),
               ],
             ),

@@ -60,7 +60,7 @@ class KindsOfGamePage extends StatelessWidget {
           crossAxisCount: 3,
           crossAxisSpacing: 8,
           mainAxisSpacing: 8,
-          childAspectRatio: 1,
+          childAspectRatio: 0.65,
         ),
         itemCount: games.length,
         itemBuilder: (context, index) {
