@@ -4,6 +4,8 @@ import 'dart:io' show Platform;
 import 'package:flutter/material.dart';
 import 'screens/user_home.dart';
 import 'screens/player_selection_page.dart';
+import 'screens/ios/user_home_ios.dart';
+import 'screens/ios/player_selection_page_ios.dart';
 import 'package:cloud_firestore/cloud_firestore.dart';
 import 'package:firebase_core/firebase_core.dart';
 import 'package:flutter/foundation.dart' show kIsWeb;
@@ -182,7 +184,9 @@ class _LoginScreenState extends State<LoginScreen> {
       Navigator.push(
         context,
         MaterialPageRoute(
-          builder: (context) => const PlayerSelectionPage(isAdmin: true),
+          builder: (context) => !kIsWeb && Platform.isIOS
+              ? const PlayerSelectionPageIOS(isAdmin: true)
+              : const PlayerSelectionPage(isAdmin: true),
         ),
       );
     } else {
@@ -240,7 +244,9 @@ class _LoginScreenState extends State<LoginScreen> {
         Navigator.push(
           context,
           MaterialPageRoute(
-            builder: (context) => UserHome(userId: docId, username: username),
+            builder: (context) => !kIsWeb && Platform.isIOS
+                ? UserHomeIOS(userId: docId, username: username)
+                : UserHome(userId: docId, username: username),
           ),
         );
       } catch (e) {

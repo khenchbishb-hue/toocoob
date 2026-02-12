@@ -1,5 +1,8 @@
 import 'package:flutter/material.dart';
+import 'dart:io' show Platform;
+import 'package:flutter/foundation.dart' show kIsWeb;
 import '13_card_poker.dart';
+import 'ios/13_card_poker_ios.dart';
 import '5_card_texas.dart';
 import 'muushig.dart';
 import 'buur.dart';
@@ -172,7 +175,9 @@ class KindsOfGamePage extends StatelessWidget {
     Widget? page;
     switch (index) {
       case 0:
-        page = CardPokerPage(selectedUserIds: selectedUserIds);
+        page = !kIsWeb && Platform.isIOS
+            ? CardPokerPageIOS(selectedUserIds: selectedUserIds)
+            : CardPokerPage(selectedUserIds: selectedUserIds);
         break;
       case 1:
         page = const CardTexasPage();

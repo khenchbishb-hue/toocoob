@@ -3,19 +3,18 @@ import 'package:flutter/services.dart';
 import 'package:cloud_firestore/cloud_firestore.dart';
 import 'dart:io' show Platform;
 import 'package:flutter/foundation.dart' show kIsWeb;
-import 'player_selection_page.dart';
-import 'ios/player_selection_page_ios.dart';
+import '../player_selection_page.dart';
 
-class CardPokerPage extends StatefulWidget {
-  const CardPokerPage({super.key, required this.selectedUserIds});
+class CardPokerPageIOS extends StatefulWidget {
+  const CardPokerPageIOS({super.key, required this.selectedUserIds});
 
   final List<String> selectedUserIds;
 
   @override
-  State<CardPokerPage> createState() => _CardPokerPageState();
+  State<CardPokerPageIOS> createState() => _CardPokerPageIOSState();
 }
 
-class _CardPokerPageState extends State<CardPokerPage>
+class _CardPokerPageIOSState extends State<CardPokerPageIOS>
     with SingleTickerProviderStateMixin {
   String selectedGame = '1';
   late List<String> currentPlayerIds;
@@ -119,15 +118,10 @@ class _CardPokerPageState extends State<CardPokerPage>
     final result = await Navigator.push<List<String>>(
       context,
       MaterialPageRoute(
-        builder: (context) => !kIsWeb && Platform.isIOS
-            ? PlayerSelectionPageIOS(
-                excludedUserIds: currentPlayerIds,
-                isAddingMode: true,
-              )
-            : PlayerSelectionPage(
-                excludedUserIds: currentPlayerIds,
-                isAddingMode: true,
-              ),
+        builder: (context) => PlayerSelectionPage(
+          excludedUserIds: currentPlayerIds,
+          isAddingMode: true,
+        ),
       ),
     );
 
@@ -170,15 +164,15 @@ class _CardPokerPageState extends State<CardPokerPage>
             return Dialog(
               backgroundColor: Colors.transparent,
               insetPadding: const EdgeInsets.symmetric(
-                horizontal: 40,
-                vertical: 40,
+                horizontal: 20,
+                vertical: 30,
               ),
               child: Container(
                 decoration: BoxDecoration(
                   color: Colors.blue,
-                  borderRadius: BorderRadius.circular(20),
+                  borderRadius: BorderRadius.circular(16),
                 ),
-                padding: const EdgeInsets.all(16),
+                padding: const EdgeInsets.all(12),
                 child: Column(
                   mainAxisSize: MainAxisSize.min,
                   children: [
@@ -188,27 +182,30 @@ class _CardPokerPageState extends State<CardPokerPage>
                         const Text(
                           'Тоглогч хасах',
                           style: TextStyle(
-                            fontSize: 20,
+                            fontSize: 16,
                             fontWeight: FontWeight.bold,
                             color: Colors.white,
                           ),
                         ),
                         IconButton(
-                          icon: const Icon(Icons.close, color: Colors.white),
+                          icon: const Icon(Icons.close, color: Colors.white, size: 20),
                           onPressed: () => Navigator.pop(context),
                         ),
                       ],
                     ),
-                    const SizedBox(height: 16),
+                    const SizedBox(height: 8),
                     Flexible(
                       child: GridView.builder(
                         shrinkWrap: true,
-                        padding: const EdgeInsets.all(16),
+                        cacheExtent: 300,
+                        addAutomaticKeepAlives: true,
+                        addRepaintBoundaries: true,
+                        padding: const EdgeInsets.all(8),
                         gridDelegate:
                             const SliverGridDelegateWithFixedCrossAxisCount(
-                          crossAxisCount: 4,
-                          crossAxisSpacing: 16,
-                          mainAxisSpacing: 16,
+                          crossAxisCount: 3,
+                          crossAxisSpacing: 8,
+                          mainAxisSpacing: 8,
                           childAspectRatio: 0.8,
                         ),
                         itemCount: players.docs.length,
@@ -286,25 +283,27 @@ class _CardPokerPageState extends State<CardPokerPage>
                                   child: Column(
                                     mainAxisSize: MainAxisSize.min,
                                     children: [
-                                      CircleAvatar(
-                                        radius: 35,
-                                        backgroundColor: Colors.grey[300],
-                                        backgroundImage: photoUrl != null &&
-                                                photoUrl.isNotEmpty
-                                            ? (photoUrl.startsWith('http')
-                                                ? NetworkImage(photoUrl)
-                                                : AssetImage('assets/$photoUrl')
-                                                    as ImageProvider)
-                                            : null,
-                                        child: photoUrl == null ||
-                                                photoUrl.isEmpty
-                                            ? const Icon(Icons.person, size: 35)
-                                            : null,
+                                      RepaintBoundary(
+                                        child: CircleAvatar(
+                                          radius: 25,
+                                          backgroundColor: Colors.grey[300],
+                                          backgroundImage: photoUrl != null &&
+                                                  photoUrl.isNotEmpty
+                                              ? (photoUrl.startsWith('http')
+                                                  ? NetworkImage(photoUrl)
+                                                  : AssetImage('assets/$photoUrl')
+                                                      as ImageProvider)
+                                              : null,
+                                          child: photoUrl == null ||
+                                                  photoUrl.isEmpty
+                                              ? const Icon(Icons.person, size: 25)
+                                              : null,
+                                        ),
                                       ),
-                                      const SizedBox(height: 8),
+                                      const SizedBox(height: 4),
                                       Text(
                                         displayName,
-                                        style: const TextStyle(fontSize: 12),
+                                        style: const TextStyle(fontSize: 10),
                                         textAlign: TextAlign.center,
                                         maxLines: 2,
                                         overflow: TextOverflow.ellipsis,
@@ -321,11 +320,11 @@ class _CardPokerPageState extends State<CardPokerPage>
                                         color: Colors.red,
                                         borderRadius: BorderRadius.circular(50),
                                       ),
-                                      padding: const EdgeInsets.all(6),
+                                      padding: const EdgeInsets.all(4),
                                       child: const Icon(
                                         Icons.close,
                                         color: Colors.white,
-                                        size: 20,
+                                        size: 16,
                                       ),
                                     ),
                                   ),
@@ -360,24 +359,24 @@ class _CardPokerPageState extends State<CardPokerPage>
               backgroundColor: Colors.transparent,
               child: Container(
                 constraints: BoxConstraints(
-                  maxHeight: MediaQuery.of(context).size.height * 0.8,
+                  maxHeight: MediaQuery.of(context).size.height * 0.7,
                 ),
                 child: Card(
                   margin: EdgeInsets.zero,
                   child: Padding(
-                    padding: const EdgeInsets.all(16.0),
+                    padding: const EdgeInsets.all(12.0),
                     child: Column(
                       mainAxisSize: MainAxisSize.min,
                       children: [
                         const Text(
                           'Шинээр нэмэгдсэн тоглогчдын дарааллыг сонго',
                           style: TextStyle(
-                            fontSize: 18,
+                            fontSize: 14,
                             fontWeight: FontWeight.bold,
                           ),
                           textAlign: TextAlign.center,
                         ),
-                        const SizedBox(height: 16),
+                        const SizedBox(height: 12),
                         Flexible(
                           child: SingleChildScrollView(
                             child: StreamBuilder<QuerySnapshot>(
@@ -385,7 +384,14 @@ class _CardPokerPageState extends State<CardPokerPage>
                                   .collection('users')
                                   .where(FieldPath.documentId,
                                       whereIn: newPlayerIds)
-                                  .snapshots(),
+                                  .snapshots()
+                                  .distinct((prev, next) {
+                                    if (prev.docs.length != next.docs.length) return false;
+                                    for (int i = 0; i < prev.docs.length; i++) {
+                                      if (prev.docs[i].id != next.docs[i].id) return false;
+                                    }
+                                    return true;
+                                  }),
                               builder: (context, snapshot) {
                                 if (!snapshot.hasData) {
                                   return const Center(
@@ -393,7 +399,7 @@ class _CardPokerPageState extends State<CardPokerPage>
                                 }
 
                                 final players = snapshot.data!.docs;
-                                const spacing = 6.0;
+                                const spacing = 4.0;
 
                                 return Wrap(
                                   alignment: WrapAlignment.center,
@@ -412,7 +418,7 @@ class _CardPokerPageState extends State<CardPokerPage>
                                     final isSelected = orderIndex >= 0;
 
                                     return SizedBox(
-                                      width: 85,
+                                      width: 70,
                                       child: GestureDetector(
                                         onTap: () {
                                           setStateModal(() {
@@ -432,33 +438,34 @@ class _CardPokerPageState extends State<CardPokerPage>
                                               child: Column(
                                                 mainAxisSize: MainAxisSize.min,
                                                 children: [
-                                                  CircleAvatar(
-                                                    radius: 35,
-                                                    backgroundColor:
-                                                        Colors.grey[300],
-                                                    backgroundImage: photoUrl !=
-                                                                null &&
-                                                            photoUrl.isNotEmpty
-                                                        ? (photoUrl.startsWith(
-                                                                'http')
-                                                            ? NetworkImage(
-                                                                photoUrl)
-                                                            : AssetImage(
-                                                                    'assets/$photoUrl')
-                                                                as ImageProvider)
-                                                        : null,
-                                                    child: photoUrl == null ||
-                                                            photoUrl.isEmpty
-                                                        ? const Icon(
-                                                            Icons.person,
-                                                            size: 35)
+                                                  RepaintBoundary(
+                                                    child: CircleAvatar(
+                                                      radius: 28,
+                                                      backgroundColor:
+                                                          Colors.grey[300],
+                                                      backgroundImage: photoUrl !=
+                                                                  null &&
+                                                              photoUrl.isNotEmpty
+                                                          ? (photoUrl.startsWith(
+                                                                  'http')
+                                                              ? NetworkImage(photoUrl)
+                                                              : AssetImage(
+                                                                      'assets/$photoUrl')
+                                                                  as ImageProvider)
+                                                          : null,
+                                                      child: photoUrl == null ||
+                                                              photoUrl.isEmpty
+                                                          ? const Icon(
+                                                              Icons.person,
+                                                            size: 28,)
                                                         : null,
                                                   ),
-                                                  const SizedBox(height: 8),
+                                                  ),
+                                                  const SizedBox(height: 6),
                                                   Text(
                                                     displayName,
                                                     style: const TextStyle(
-                                                        fontSize: 12),
+                                                        fontSize: 10),
                                                     textAlign: TextAlign.center,
                                                     maxLines: 2,
                                                     overflow:
@@ -469,25 +476,25 @@ class _CardPokerPageState extends State<CardPokerPage>
                                             ),
                                             if (isSelected)
                                               Positioned(
-                                                bottom: -8,
+                                                bottom: -6,
                                                 left: 0,
                                                 right: 0,
                                                 child: Center(
                                                   child: Container(
-                                                    width: 24,
-                                                    height: 24,
+                                                    width: 20,
+                                                    height: 20,
                                                     decoration: BoxDecoration(
                                                       color: Colors.blue,
                                                       borderRadius:
                                                           BorderRadius.circular(
-                                                              12),
+                                                              10),
                                                     ),
                                                     child: Center(
                                                       child: Text(
                                                         '${orderIndex + 1}',
                                                         style: const TextStyle(
                                                           color: Colors.white,
-                                                          fontSize: 12,
+                                                          fontSize: 10,
                                                           fontWeight:
                                                               FontWeight.bold,
                                                         ),
@@ -506,7 +513,7 @@ class _CardPokerPageState extends State<CardPokerPage>
                             ),
                           ),
                         ),
-                        const SizedBox(height: 16),
+                        const SizedBox(height: 12),
                         Row(
                           mainAxisAlignment: MainAxisAlignment.spaceBetween,
                           children: [
@@ -569,19 +576,19 @@ class _CardPokerPageState extends State<CardPokerPage>
             return Dialog(
               backgroundColor: Colors.transparent,
               insetPadding: const EdgeInsets.symmetric(
-                horizontal: 24,
-                vertical: 24,
+                horizontal: 16,
+                vertical: 20,
               ),
               child: Container(
                 padding: const EdgeInsets.only(
-                  left: 16,
-                  right: 16,
-                  top: 16,
-                  bottom: 24,
+                  left: 12,
+                  right: 12,
+                  top: 12,
+                  bottom: 16,
                 ),
                 decoration: BoxDecoration(
                   color: Colors.blue,
-                  borderRadius: BorderRadius.circular(20),
+                  borderRadius: BorderRadius.circular(16),
                 ),
                 child: Column(
                   mainAxisSize: MainAxisSize.min,
@@ -589,24 +596,26 @@ class _CardPokerPageState extends State<CardPokerPage>
                     Row(
                       mainAxisAlignment: MainAxisAlignment.spaceBetween,
                       children: [
-                        Text(
-                          'Тоглолт № $_gameRoundNumber Суух дараалал сонгох',
-                          style: const TextStyle(
-                            fontSize: 18,
-                            fontWeight: FontWeight.bold,
-                            color: Colors.white,
+                        Expanded(
+                          child: Text(
+                            'Тоглолт № $_gameRoundNumber Суух дараалал сонгох',
+                            style: const TextStyle(
+                              fontSize: 14,
+                              fontWeight: FontWeight.bold,
+                              color: Colors.white,
+                            ),
                           ),
                         ),
                         Text(
                           '${selectedOrder.length}/${currentPlayerIds.length}',
                           style: const TextStyle(
-                            fontSize: 14,
+                            fontSize: 12,
                             color: Colors.white70,
                           ),
                         ),
                       ],
                     ),
-                    const SizedBox(height: 12),
+                    const SizedBox(height: 8),
                     Flexible(
                       child: SingleChildScrollView(
                         controller: scrollController,
@@ -620,11 +629,18 @@ class _CardPokerPageState extends State<CardPokerPage>
                                       whereIn: currentPlayerIds.isEmpty
                                           ? ['']
                                           : currentPlayerIds)
-                                  .snapshots(),
+                                  .snapshots()
+                                  .distinct((prev, next) {
+                                    if (prev.docs.length != next.docs.length) return false;
+                                    for (int i = 0; i < prev.docs.length; i++) {
+                                      if (prev.docs[i].id != next.docs[i].id) return false;
+                                    }
+                                    return true;
+                                  }),
                               builder: (context, snapshot) {
                                 if (!snapshot.hasData) {
                                   return const Padding(
-                                    padding: EdgeInsets.all(24),
+                                    padding: EdgeInsets.all(16),
                                     child: CircularProgressIndicator(),
                                   );
                                 }
@@ -638,165 +654,151 @@ class _CardPokerPageState extends State<CardPokerPage>
                                     .map((id) => docsById[id]!)
                                     .toList();
 
-                                return LayoutBuilder(
-                                  builder: (context, constraints) {
-                                    final count = orderedDocs.length;
-                                    const spacing = 6.0;
-                                    final itemWidth = (constraints.maxWidth -
-                                            spacing * (count - 1)) /
-                                        count;
+                                return Wrap(
+                                  alignment: WrapAlignment.center,
+                                  spacing: 4,
+                                  runSpacing: 4,
+                                  children: orderedDocs.map((player) {
+                                    final data = player.data()
+                                        as Map<String, dynamic>;
+                                    final displayName =
+                                        data['displayName'] ??
+                                            data['username'] ??
+                                            'Хэрэглэгч';
+                                    final photoUrl = data['photoUrl'];
+                                    final orderIndex =
+                                        selectedOrder.indexOf(player.id);
 
-                                    return Row(
-                                      children: List.generate(count, (index) {
-                                        final player = orderedDocs[index];
-                                        final data = player.data()
-                                            as Map<String, dynamic>;
-                                        final displayName =
-                                            data['displayName'] ??
-                                                data['username'] ??
-                                                'Хэрэглэгч';
-                                        final photoUrl = data['photoUrl'];
-                                        final orderIndex =
-                                            selectedOrder.indexOf(player.id);
-
-                                        return Padding(
-                                          padding: EdgeInsets.only(
-                                            right: index == count - 1
-                                                ? 0
-                                                : spacing,
-                                          ),
-                                          child: SizedBox(
-                                            width: itemWidth,
-                                            child: GestureDetector(
-                                              onTap: () {
-                                                setStateModal(() {
-                                                  if (orderIndex != -1) {
-                                                    selectedOrder
-                                                        .remove(player.id);
-                                                  } else if (selectedOrder
-                                                          .length <
-                                                      currentPlayerIds.length) {
-                                                    selectedOrder
-                                                        .add(player.id);
-                                                  }
-                                                });
-                                              },
-                                              child: Stack(
-                                                clipBehavior: Clip.none,
+                                    return SizedBox(
+                                      width: 70,
+                                      child: GestureDetector(
+                                        onTap: () {
+                                          setStateModal(() {
+                                            if (orderIndex != -1) {
+                                              selectedOrder
+                                                  .remove(player.id);
+                                            } else if (selectedOrder
+                                                    .length <
+                                                currentPlayerIds.length) {
+                                              selectedOrder
+                                                  .add(player.id);
+                                            }
+                                          });
+                                        },
+                                        child: Stack(
+                                          clipBehavior: Clip.none,
+                                          children: [
+                                            Container(
+                                              decoration: BoxDecoration(
+                                                color: Colors.white
+                                                    .withOpacity(0.15),
+                                                borderRadius:
+                                                    BorderRadius.circular(
+                                                        12),
+                                                border: Border.all(
+                                                  color: orderIndex != -1
+                                                      ? Colors.amber
+                                                      : Colors
+                                                          .transparent,
+                                                  width: 2,
+                                                ),
+                                              ),
+                                              padding:
+                                                  const EdgeInsets.all(4),
+                                              child: Column(
+                                                mainAxisAlignment:
+                                                    MainAxisAlignment
+                                                        .center,
                                                 children: [
-                                                  Container(
-                                                    decoration: BoxDecoration(
-                                                      color: Colors.white
-                                                          .withOpacity(0.15),
-                                                      borderRadius:
-                                                          BorderRadius.circular(
-                                                              16),
-                                                      border: Border.all(
-                                                        color: orderIndex != -1
-                                                            ? Colors.amber
-                                                            : Colors
-                                                                .transparent,
-                                                        width: 2,
-                                                      ),
-                                                    ),
-                                                    padding:
-                                                        const EdgeInsets.all(4),
-                                                    child: Column(
-                                                      mainAxisAlignment:
-                                                          MainAxisAlignment
-                                                              .center,
-                                                      children: [
-                                                        CircleAvatar(
-                                                          radius: 20,
-                                                          backgroundColor:
-                                                              Colors.grey[300],
-                                                          backgroundImage: photoUrl !=
-                                                                      null &&
-                                                                  photoUrl
-                                                                      .isNotEmpty
-                                                              ? (photoUrl
-                                                                      .startsWith(
-                                                                          'http')
-                                                                  ? NetworkImage(
-                                                                      photoUrl)
-                                                                  : AssetImage(
-                                                                          'assets/$photoUrl')
-                                                                      as ImageProvider)
-                                                              : null,
-                                                          child: photoUrl ==
-                                                                      null ||
-                                                                  photoUrl
-                                                                      .isEmpty
-                                                              ? const Icon(
-                                                                  Icons.person,
-                                                                  size: 18)
-                                                              : null,
-                                                        ),
-                                                        const SizedBox(
-                                                            height: 4),
-                                                        Text(
-                                                          displayName,
-                                                          style:
-                                                              const TextStyle(
-                                                            fontSize: 10,
-                                                            fontWeight:
-                                                                FontWeight.bold,
-                                                            color: Colors.white,
-                                                          ),
-                                                          maxLines: 1,
-                                                          overflow: TextOverflow
-                                                              .ellipsis,
-                                                          textAlign:
-                                                              TextAlign.center,
-                                                        ),
-                                                      ],
-                                                    ),
+                                                  RepaintBoundary(
+                                                    child: CircleAvatar(
+                                                      radius: 18,
+                                                      backgroundColor:
+                                                          Colors.grey[300],
+                                                      backgroundImage: photoUrl !=
+                                                                  null &&
+                                                              photoUrl
+                                                                  .isNotEmpty
+                                                          ? (photoUrl
+                                                                  .startsWith(
+                                                                      'http')
+                                                              ? NetworkImage(photoUrl)
+                                                            : AssetImage(
+                                                                    'assets/$photoUrl')
+                                                                as ImageProvider)
+                                                        : null,
+                                                    child: photoUrl ==
+                                                                null ||
+                                                            photoUrl
+                                                                .isEmpty
+                                                        ? const Icon(
+                                                            Icons.person,
+                                                            size: 16,)
+                                                        : null,
                                                   ),
-                                                  if (orderIndex != -1)
-                                                    Positioned(
-                                                      bottom: -8,
-                                                      left: 0,
-                                                      right: 0,
-                                                      child: Center(
-                                                        child: Container(
-                                                          width: 28,
-                                                          height: 28,
-                                                          decoration:
-                                                              BoxDecoration(
-                                                            color: Colors.amber,
-                                                            shape:
-                                                                BoxShape.circle,
-                                                            border: Border.all(
-                                                              color:
-                                                                  Colors.blue,
-                                                              width: 2,
-                                                            ),
-                                                          ),
-                                                          alignment:
-                                                              Alignment.center,
-                                                          child: Text(
-                                                            '${orderIndex + 1}',
-                                                            style:
-                                                                const TextStyle(
-                                                              fontSize: 13,
-                                                              fontWeight:
-                                                                  FontWeight
-                                                                      .bold,
-                                                              color:
-                                                                  Colors.black,
-                                                            ),
-                                                          ),
-                                                        ),
-                                                      ),
+                                                  ),
+                                                  const SizedBox(
+                                                      height: 3),
+                                                  Text(
+                                                    displayName,
+                                                    style:
+                                                        const TextStyle(
+                                                      fontSize: 9,
+                                                      fontWeight:
+                                                          FontWeight.bold,
+                                                      color: Colors.white,
                                                     ),
+                                                    maxLines: 1,
+                                                    overflow: TextOverflow
+                                                        .ellipsis,
+                                                    textAlign:
+                                                        TextAlign.center,
+                                                  ),
                                                 ],
                                               ),
                                             ),
-                                          ),
-                                        );
-                                      }),
+                                            if (orderIndex != -1)
+                                              Positioned(
+                                                bottom: -6,
+                                                left: 0,
+                                                right: 0,
+                                                child: Center(
+                                                  child: Container(
+                                                    width: 22,
+                                                    height: 22,
+                                                    decoration:
+                                                        BoxDecoration(
+                                                      color: Colors.amber,
+                                                      shape:
+                                                          BoxShape.circle,
+                                                      border: Border.all(
+                                                        color:
+                                                            Colors.blue,
+                                                        width: 2,
+                                                      ),
+                                                    ),
+                                                    alignment:
+                                                        Alignment.center,
+                                                    child: Text(
+                                                      '${orderIndex + 1}',
+                                                      style:
+                                                          const TextStyle(
+                                                        fontSize: 11,
+                                                        fontWeight:
+                                                            FontWeight
+                                                                .bold,
+                                                        color:
+                                                            Colors.black,
+                                                      ),
+                                                    ),
+                                                  ),
+                                                ),
+                                              ),
+                                          ],
+                                        ),
+                                      ),
                                     );
-                                  },
+                                  }).toList(),
                                 );
                               },
                             ),
@@ -804,7 +806,7 @@ class _CardPokerPageState extends State<CardPokerPage>
                         ),
                       ),
                     ),
-                    const SizedBox(height: 12),
+                    const SizedBox(height: 8),
                     Row(
                       children: [
                         Expanded(
@@ -816,14 +818,15 @@ class _CardPokerPageState extends State<CardPokerPage>
                             },
                             style: OutlinedButton.styleFrom(
                               side: const BorderSide(color: Colors.white70),
+                              padding: const EdgeInsets.symmetric(vertical: 8),
                             ),
                             child: const Text(
                               'Цэвэрлэх',
-                              style: TextStyle(color: Colors.white),
+                              style: TextStyle(color: Colors.white, fontSize: 12),
                             ),
                           ),
                         ),
-                        const SizedBox(width: 12),
+                        const SizedBox(width: 8),
                         Expanded(
                           child: ElevatedButton(
                             onPressed: selectedOrder.length ==
@@ -884,12 +887,14 @@ class _CardPokerPageState extends State<CardPokerPage>
                                 : null,
                             style: ElevatedButton.styleFrom(
                               backgroundColor: Colors.amber,
+                              padding: const EdgeInsets.symmetric(vertical: 8),
                             ),
                             child: const Text(
                               'Тоглолт эхлүүл',
                               style: TextStyle(
                                 color: Colors.black,
                                 fontWeight: FontWeight.bold,
+                                fontSize: 12,
                               ),
                             ),
                           ),
@@ -952,10 +957,10 @@ class _CardPokerPageState extends State<CardPokerPage>
         return Dialog(
           backgroundColor: Colors.transparent,
           child: Container(
-            padding: const EdgeInsets.all(24),
+            padding: const EdgeInsets.all(16),
             decoration: BoxDecoration(
               color: Colors.blue.shade800,
-              borderRadius: BorderRadius.circular(20),
+              borderRadius: BorderRadius.circular(16),
             ),
             child: Column(
               mainAxisSize: MainAxisSize.min,
@@ -963,21 +968,21 @@ class _CardPokerPageState extends State<CardPokerPage>
                 const Text(
                   'Дундаа боох уу?',
                   style: TextStyle(
-                    fontSize: 24,
+                    fontSize: 18,
                     fontWeight: FontWeight.bold,
                     color: Colors.white,
                   ),
                   textAlign: TextAlign.center,
                 ),
-                const SizedBox(height: 8),
+                const SizedBox(height: 6),
                 const Text(
                   'Бүх тоглогч тэнцэж байна',
                   style: TextStyle(
-                    fontSize: 16,
+                    fontSize: 14,
                     color: Colors.white70,
                   ),
                 ),
-                const SizedBox(height: 24),
+                const SizedBox(height: 16),
                 Row(
                   children: [
                     Expanded(
@@ -997,19 +1002,19 @@ class _CardPokerPageState extends State<CardPokerPage>
                         },
                         style: ElevatedButton.styleFrom(
                           backgroundColor: Colors.red.shade600,
-                          padding: const EdgeInsets.symmetric(vertical: 16),
+                          padding: const EdgeInsets.symmetric(vertical: 12),
                         ),
                         child: const Text(
                           'Дундаа боох',
                           style: TextStyle(
-                            fontSize: 18,
+                            fontSize: 14,
                             fontWeight: FontWeight.bold,
                             color: Colors.white,
                           ),
                         ),
                       ),
                     ),
-                    const SizedBox(width: 12),
+                    const SizedBox(width: 8),
                     Expanded(
                       child: ElevatedButton(
                         onPressed: () {
@@ -1041,12 +1046,12 @@ class _CardPokerPageState extends State<CardPokerPage>
                         },
                         style: ElevatedButton.styleFrom(
                           backgroundColor: Colors.green.shade600,
-                          padding: const EdgeInsets.symmetric(vertical: 16),
+                          padding: const EdgeInsets.symmetric(vertical: 12),
                         ),
                         child: const Text(
                           'Дахин тойрох',
                           style: TextStyle(
-                            fontSize: 18,
+                            fontSize: 14,
                             fontWeight: FontWeight.bold,
                             color: Colors.white,
                           ),
@@ -1095,10 +1100,10 @@ class _CardPokerPageState extends State<CardPokerPage>
         return Dialog(
           backgroundColor: Colors.transparent,
           child: Container(
-            padding: const EdgeInsets.all(24),
+            padding: const EdgeInsets.all(16),
             decoration: BoxDecoration(
               color: Colors.blue.shade800,
-              borderRadius: BorderRadius.circular(20),
+              borderRadius: BorderRadius.circular(16),
             ),
             child: Column(
               mainAxisSize: MainAxisSize.min,
@@ -1112,13 +1117,13 @@ class _CardPokerPageState extends State<CardPokerPage>
                               ? 'Боолт хийх уу?'
                               : 'Тоглолт үргэлжлүүлэх үү?',
                   style: const TextStyle(
-                    fontSize: 24,
+                    fontSize: 18,
                     fontWeight: FontWeight.bold,
                     color: Colors.white,
                   ),
                   textAlign: TextAlign.center,
                 ),
-                const SizedBox(height: 8),
+                const SizedBox(height: 6),
                 Text(
                   allTied
                       ? 'Бүх тоглогч тэнцсэн'
@@ -1126,11 +1131,11 @@ class _CardPokerPageState extends State<CardPokerPage>
                           ? '$nonFailedNames хожоогүй байна'
                           : '$nonFailedNames хожоогүй байна',
                   style: const TextStyle(
-                    fontSize: 16,
+                    fontSize: 13,
                     color: Colors.white70,
                   ),
                 ),
-                const SizedBox(height: 24),
+                const SizedBox(height: 16),
                 if (allTied)
                   // Бүх тоглогч тэнцсэн үед "Дундаа боох" товч
                   Row(
@@ -1159,19 +1164,19 @@ class _CardPokerPageState extends State<CardPokerPage>
                           },
                           style: ElevatedButton.styleFrom(
                             backgroundColor: Colors.orange.shade600,
-                            padding: const EdgeInsets.symmetric(vertical: 16),
+                            padding: const EdgeInsets.symmetric(vertical: 12),
                           ),
                           child: const Text(
                             'Дундаа боох',
                             style: TextStyle(
-                              fontSize: 18,
+                              fontSize: 14,
                               fontWeight: FontWeight.bold,
                               color: Colors.white,
                             ),
                           ),
                         ),
                       ),
-                      const SizedBox(width: 12),
+                      const SizedBox(width: 8),
                       Expanded(
                         child: ElevatedButton(
                           onPressed: () {
@@ -1189,12 +1194,12 @@ class _CardPokerPageState extends State<CardPokerPage>
                           },
                           style: ElevatedButton.styleFrom(
                             backgroundColor: Colors.green.shade600,
-                            padding: const EdgeInsets.symmetric(vertical: 16),
+                            padding: const EdgeInsets.symmetric(vertical: 12),
                           ),
                           child: const Text(
                             'Дахин тойрох',
                             style: TextStyle(
-                              fontSize: 18,
+                              fontSize: 14,
                               fontWeight: FontWeight.bold,
                               color: Colors.white,
                             ),
@@ -1223,19 +1228,19 @@ class _CardPokerPageState extends State<CardPokerPage>
                           },
                           style: ElevatedButton.styleFrom(
                             backgroundColor: Colors.red.shade600,
-                            padding: const EdgeInsets.symmetric(vertical: 16),
+                            padding: const EdgeInsets.symmetric(vertical: 12),
                           ),
                           child: const Text(
                             'Боолт хийх',
                             style: TextStyle(
-                              fontSize: 18,
+                              fontSize: 14,
                               fontWeight: FontWeight.bold,
                               color: Colors.white,
                             ),
                           ),
                         ),
                       ),
-                      const SizedBox(width: 12),
+                      const SizedBox(width: 8),
                       Expanded(
                         child: ElevatedButton(
                           onPressed: () {
@@ -1253,12 +1258,12 @@ class _CardPokerPageState extends State<CardPokerPage>
                           },
                           style: ElevatedButton.styleFrom(
                             backgroundColor: Colors.green.shade600,
-                            padding: const EdgeInsets.symmetric(vertical: 16),
+                            padding: const EdgeInsets.symmetric(vertical: 12),
                           ),
                           child: const Text(
                             'Дахин тойрох',
                             style: TextStyle(
-                              fontSize: 18,
+                              fontSize: 14,
                               fontWeight: FontWeight.bold,
                               color: Colors.white,
                             ),
@@ -1281,12 +1286,12 @@ class _CardPokerPageState extends State<CardPokerPage>
                     },
                     style: ElevatedButton.styleFrom(
                       backgroundColor: Colors.green.shade600,
-                      padding: const EdgeInsets.symmetric(vertical: 16),
+                      padding: const EdgeInsets.symmetric(vertical: 12),
                     ),
                     child: const Text(
                       'Дараагийн тоглолт',
                       style: TextStyle(
-                        fontSize: 18,
+                        fontSize: 14,
                         fontWeight: FontWeight.bold,
                         color: Colors.white,
                       ),
@@ -1305,12 +1310,12 @@ class _CardPokerPageState extends State<CardPokerPage>
                     },
                     style: ElevatedButton.styleFrom(
                       backgroundColor: Colors.green.shade600,
-                      padding: const EdgeInsets.symmetric(vertical: 16),
+                      padding: const EdgeInsets.symmetric(vertical: 12),
                     ),
                     child: const Text(
                       'Дахин тойрох',
                       style: TextStyle(
-                        fontSize: 18,
+                        fontSize: 14,
                         fontWeight: FontWeight.bold,
                         color: Colors.white,
                       ),
@@ -1339,19 +1344,19 @@ class _CardPokerPageState extends State<CardPokerPage>
             return Dialog(
               backgroundColor: Colors.transparent,
               insetPadding: const EdgeInsets.symmetric(
-                horizontal: 24,
-                vertical: 24,
+                horizontal: 16,
+                vertical: 20,
               ),
               child: Container(
                 padding: const EdgeInsets.only(
-                  left: 16,
-                  right: 16,
-                  top: 16,
-                  bottom: 24,
+                  left: 12,
+                  right: 12,
+                  top: 12,
+                  bottom: 16,
                 ),
                 decoration: BoxDecoration(
                   color: Colors.blue,
-                  borderRadius: BorderRadius.circular(20),
+                  borderRadius: BorderRadius.circular(16),
                 ),
                 child: Column(
                   mainAxisSize: MainAxisSize.min,
@@ -1359,34 +1364,43 @@ class _CardPokerPageState extends State<CardPokerPage>
                     Row(
                       mainAxisAlignment: MainAxisAlignment.spaceBetween,
                       children: [
-                        Text(
-                          title,
-                          style: const TextStyle(
-                            fontSize: 16,
-                            fontWeight: FontWeight.bold,
-                            color: Colors.white,
+                        Expanded(
+                          child: Text(
+                            title,
+                            style: const TextStyle(
+                              fontSize: 13,
+                              fontWeight: FontWeight.bold,
+                              color: Colors.white,
+                            ),
                           ),
                         ),
                         Text(
                           '${selectedOrder.length}/${tiedIds.length}',
                           style: const TextStyle(
-                            fontSize: 12,
+                            fontSize: 11,
                             color: Colors.white70,
                           ),
                         ),
                       ],
                     ),
-                    const SizedBox(height: 12),
+                    const SizedBox(height: 8),
                     StreamBuilder<QuerySnapshot>(
                       stream: FirebaseFirestore.instance
                           .collection('users')
                           .where(FieldPath.documentId,
                               whereIn: tiedIds.isEmpty ? [''] : tiedIds)
-                          .snapshots(),
+                          .snapshots()
+                          .distinct((prev, next) {
+                            if (prev.docs.length != next.docs.length) return false;
+                            for (int i = 0; i < prev.docs.length; i++) {
+                              if (prev.docs[i].id != next.docs[i].id) return false;
+                            }
+                            return true;
+                          }),
                       builder: (context, snapshot) {
                         if (!snapshot.hasData) {
                           return const Padding(
-                            padding: EdgeInsets.all(24),
+                            padding: EdgeInsets.all(16),
                             child: CircularProgressIndicator(),
                           );
                         }
@@ -1399,134 +1413,122 @@ class _CardPokerPageState extends State<CardPokerPage>
                             .map((id) => docsById[id]!)
                             .toList();
 
-                        return LayoutBuilder(
-                          builder: (context, constraints) {
-                            final count = orderedDocs.length;
-                            const spacing = 2.0;
-                            final itemWidth =
-                                (constraints.maxWidth - spacing * (count - 1)) /
-                                    count;
+                        return Wrap(
+                          alignment: WrapAlignment.center,
+                          spacing: 4,
+                          runSpacing: 4,
+                          children: orderedDocs.map((player) {
+                            final data =
+                                player.data() as Map<String, dynamic>;
+                            final displayName = data['displayName'] ??
+                                data['username'] ??
+                                'Хэрэглэгч';
+                            final photoUrl = data['photoUrl'];
+                            final orderIndex =
+                                selectedOrder.indexOf(player.id);
 
-                            return Row(
-                              children: List.generate(count, (index) {
-                                final player = orderedDocs[index];
-                                final data =
-                                    player.data() as Map<String, dynamic>;
-                                final displayName = data['displayName'] ??
-                                    data['username'] ??
-                                    'Хэрэглэгч';
-                                final photoUrl = data['photoUrl'];
-                                final orderIndex =
-                                    selectedOrder.indexOf(player.id);
-
-                                return Padding(
-                                  padding: EdgeInsets.only(
-                                    right: index == count - 1 ? 0 : spacing,
-                                  ),
-                                  child: SizedBox(
-                                    width: itemWidth,
-                                    child: GestureDetector(
-                                      onTap: () {
-                                        setStateModal(() {
-                                          if (orderIndex != -1) {
-                                            selectedOrder.remove(player.id);
-                                          } else if (selectedOrder.length <
-                                              tiedIds.length) {
-                                            selectedOrder.add(player.id);
-                                          }
-                                        });
-                                      },
-                                      child: Stack(
+                            return SizedBox(
+                              width: 65,
+                              child: GestureDetector(
+                                onTap: () {
+                                  setStateModal(() {
+                                    if (orderIndex != -1) {
+                                      selectedOrder.remove(player.id);
+                                    } else if (selectedOrder.length <
+                                        tiedIds.length) {
+                                      selectedOrder.add(player.id);
+                                    }
+                                  });
+                                },
+                                child: Stack(
+                                  children: [
+                                    Container(
+                                      decoration: BoxDecoration(
+                                        color: Colors.white
+                                            .withOpacity(0.15),
+                                        borderRadius:
+                                            BorderRadius.circular(12),
+                                        border: Border.all(
+                                          color: orderIndex != -1
+                                              ? Colors.amber
+                                              : Colors.transparent,
+                                          width: 2,
+                                        ),
+                                      ),
+                                      padding: const EdgeInsets.all(4),
+                                      child: Column(
+                                        mainAxisAlignment:
+                                            MainAxisAlignment.center,
                                         children: [
-                                          Container(
-                                            decoration: BoxDecoration(
-                                              color: Colors.white
-                                                  .withOpacity(0.15),
-                                              borderRadius:
-                                                  BorderRadius.circular(16),
-                                              border: Border.all(
-                                                color: orderIndex != -1
-                                                    ? Colors.amber
-                                                    : Colors.transparent,
-                                                width: 2,
-                                              ),
-                                            ),
-                                            padding: const EdgeInsets.all(4),
-                                            child: Column(
-                                              mainAxisAlignment:
-                                                  MainAxisAlignment.center,
-                                              children: [
-                                                CircleAvatar(
-                                                  radius: 20,
-                                                  backgroundColor:
-                                                      Colors.grey[300],
-                                                  backgroundImage: photoUrl !=
-                                                              null &&
-                                                          photoUrl.isNotEmpty
-                                                      ? (photoUrl.startsWith(
-                                                              'http')
-                                                          ? NetworkImage(
-                                                              photoUrl)
-                                                          : AssetImage(
-                                                                  'assets/$photoUrl')
-                                                              as ImageProvider)
-                                                      : null,
-                                                  child: photoUrl == null ||
-                                                          photoUrl.isEmpty
-                                                      ? const Icon(Icons.person,
-                                                          size: 18)
-                                                      : null,
-                                                ),
-                                                const SizedBox(height: 4),
-                                                Text(
-                                                  displayName,
-                                                  style: const TextStyle(
-                                                    fontSize: 10,
-                                                    fontWeight: FontWeight.bold,
-                                                    color: Colors.white,
-                                                  ),
-                                                  maxLines: 1,
-                                                  overflow:
-                                                      TextOverflow.ellipsis,
-                                                  textAlign: TextAlign.center,
-                                                ),
-                                              ],
-                                            ),
+                                          RepaintBoundary(
+                                            child: CircleAvatar(
+                                              radius: 16,
+                                              backgroundColor:
+                                                  Colors.grey[300],
+                                              backgroundImage: photoUrl !=
+                                                          null &&
+                                                      photoUrl.isNotEmpty
+                                                  ? (photoUrl.startsWith(
+                                                          'http')
+                                                      ? NetworkImage(photoUrl)
+                                                      : AssetImage(
+                                                              'assets/$photoUrl')
+                                                          as ImageProvider)
+                                                  : null,
+                                            child: photoUrl == null ||
+                                                    photoUrl.isEmpty
+                                                ? const Icon(Icons.person,
+                                                    size: 14)
+                                                : null,
                                           ),
-                                          if (orderIndex != -1)
-                                            Positioned(
-                                              right: 4,
-                                              top: 4,
-                                              child: Container(
-                                                width: 22,
-                                                height: 22,
-                                                decoration: const BoxDecoration(
-                                                  color: Colors.amber,
-                                                  shape: BoxShape.circle,
-                                                ),
-                                                alignment: Alignment.center,
-                                                child: Text(
-                                                  '${orderIndex + 1}',
-                                                  style: const TextStyle(
-                                                    fontSize: 11,
-                                                    fontWeight: FontWeight.bold,
-                                                    color: Colors.black,
-                                                  ),
-                                                ),
-                                              ),
+                                          ),
+                                          const SizedBox(height: 3),
+                                          Text(
+                                            displayName,
+                                            style: const TextStyle(
+                                              fontSize: 9,
+                                              fontWeight: FontWeight.bold,
+                                              color: Colors.white,
                                             ),
+                                            maxLines: 1,
+                                            overflow:
+                                                TextOverflow.ellipsis,
+                                            textAlign: TextAlign.center,
+                                          ),
                                         ],
                                       ),
                                     ),
-                                  ),
-                                );
-                              }),
+                                    if (orderIndex != -1)
+                                      Positioned(
+                                        right: 3,
+                                        top: 3,
+                                        child: Container(
+                                          width: 18,
+                                          height: 18,
+                                          decoration: const BoxDecoration(
+                                            color: Colors.amber,
+                                            shape: BoxShape.circle,
+                                          ),
+                                          alignment: Alignment.center,
+                                          child: Text(
+                                            '${orderIndex + 1}',
+                                            style: const TextStyle(
+                                              fontSize: 10,
+                                              fontWeight: FontWeight.bold,
+                                              color: Colors.black,
+                                            ),
+                                          ),
+                                        ),
+                                      ),
+                                  ],
+                                ),
+                              ),
                             );
-                          },
+                          }).toList(),
                         );
                       },
                     ),
-                    const SizedBox(height: 16),
+                    const SizedBox(height: 12),
                     Row(
                       children: [
                         Expanded(
@@ -1538,14 +1540,15 @@ class _CardPokerPageState extends State<CardPokerPage>
                             },
                             style: OutlinedButton.styleFrom(
                               side: const BorderSide(color: Colors.white70),
+                              padding: const EdgeInsets.symmetric(vertical: 8),
                             ),
                             child: const Text(
                               'Цэвэрлэх',
-                              style: TextStyle(color: Colors.white),
+                              style: TextStyle(color: Colors.white, fontSize: 12),
                             ),
                           ),
                         ),
-                        const SizedBox(width: 12),
+                        const SizedBox(width: 8),
                         Expanded(
                           child: ElevatedButton(
                             onPressed: selectedOrder.length == tiedIds.length
@@ -1555,12 +1558,14 @@ class _CardPokerPageState extends State<CardPokerPage>
                                 : null,
                             style: ElevatedButton.styleFrom(
                               backgroundColor: Colors.amber,
+                              padding: const EdgeInsets.symmetric(vertical: 8),
                             ),
                             child: const Text(
                               'Дуусгах',
                               style: TextStyle(
                                 color: Colors.black,
                                 fontWeight: FontWeight.bold,
+                                fontSize: 12,
                               ),
                             ),
                           ),
@@ -1987,6 +1992,9 @@ class _CardPokerPageState extends State<CardPokerPage>
 
   @override
   Widget build(BuildContext context) {
+    final screenWidth = MediaQuery.of(context).size.width;
+    final screenHeight = MediaQuery.of(context).size.height;
+
     final gameOptions = [
       '1',
       '2',
@@ -2010,51 +2018,51 @@ class _CardPokerPageState extends State<CardPokerPage>
       backgroundColor: Colors.blue,
       appBar: AppBar(
         backgroundColor: Colors.blue,
-        toolbarHeight: 120,
-        leadingWidth: 220,
+        toolbarHeight: 65,
+        leadingWidth: 130,
         leading: Padding(
-          padding: const EdgeInsets.symmetric(horizontal: 8),
+          padding: const EdgeInsets.symmetric(horizontal: 4),
           child: Row(
             mainAxisSize: MainAxisSize.min,
             children: [
               const Text(
                 'Тоглогч',
-                style: TextStyle(fontSize: 24),
-              ),
-              const SizedBox(width: 8),
-              Material(
-                color: Colors.transparent,
-                child: InkWell(
-                  onTap: _addPlayers,
-                  child: const Icon(Icons.add, size: 40),
-                ),
+                style: TextStyle(fontSize: 14),
               ),
               const SizedBox(width: 4),
               Material(
                 color: Colors.transparent,
                 child: InkWell(
+                  onTap: _addPlayers,
+                  child: const Icon(Icons.add, size: 24),
+                ),
+              ),
+              const SizedBox(width: 2),
+              Material(
+                color: Colors.transparent,
+                child: InkWell(
                   onTap: _removePlayers,
-                  child: const Icon(Icons.remove, size: 40),
+                  child: const Icon(Icons.remove, size: 24),
                 ),
               ),
             ],
           ),
         ),
-        title: const Column(
+        title: Column(
           mainAxisSize: MainAxisSize.min,
           crossAxisAlignment: CrossAxisAlignment.center,
           children: [
             Text(
               '13 модны покер',
-              style: TextStyle(fontSize: 60),
+              style: TextStyle(fontSize: screenWidth < 380 ? 18 : 22),
             ),
-            SizedBox(height: 8),
+            const SizedBox(height: 2),
             Row(
               mainAxisSize: MainAxisSize.min,
               children: [
                 Text(
                   'Ширээний №: 1',
-                  style: TextStyle(fontSize: 28),
+                  style: TextStyle(fontSize: screenWidth < 380 ? 11 : 13),
                 ),
               ],
             ),
@@ -2064,188 +2072,127 @@ class _CardPokerPageState extends State<CardPokerPage>
         elevation: 0,
         actions: [
           Padding(
-            padding: const EdgeInsets.symmetric(horizontal: 16),
+            padding: const EdgeInsets.symmetric(horizontal: 8),
             child: Row(
               mainAxisAlignment: MainAxisAlignment.center,
               mainAxisSize: MainAxisSize.min,
               children: [
                 Text(
                   _isBooltMode ? 'Боолтын №:' : 'Тоглолтын №:',
-                  style: const TextStyle(fontSize: 28, color: Colors.white),
+                  style: TextStyle(fontSize: screenWidth < 380 ? 11 : 13, color: Colors.white),
                 ),
-                const SizedBox(width: 12),
+                const SizedBox(width: 6),
                 Text(
                   _isBooltMode
                       ? _booltRoundNumber.toString()
                       : _gameRoundNumber.toString(),
-                  style: const TextStyle(
-                      fontSize: 28,
+                  style: TextStyle(
+                      fontSize: screenWidth < 380 ? 11 : 13,
                       color: Colors.white,
                       fontWeight: FontWeight.bold),
                 ),
-                const SizedBox(width: 12),
+                const SizedBox(width: 6),
                 Material(
                   color: Colors.transparent,
                   child: InkWell(
                     onTap: () {
                       // Settings logic
                     },
-                    child: const Icon(Icons.settings, size: 32),
+                    child: const Icon(Icons.settings, size: 20),
                   ),
                 ),
               ],
             ),
           ),
+          TextButton.icon(
+            icon: const Icon(Icons.arrow_back, color: Colors.white, size: 18),
+            label: const Text('Буцах', style: TextStyle(color: Colors.white, fontSize: 14)),
+            onPressed: () => Navigator.of(context).pop(),
+          ),
+          const SizedBox(width: 4),
         ],
       ),
-      body: StreamBuilder<QuerySnapshot>(
-        stream: FirebaseFirestore.instance
-            .collection('users')
-            .where(FieldPath.documentId,
-                whereIn: currentPlayerIds.isEmpty ? [''] : currentPlayerIds)
-            .snapshots(),
-        builder: (context, snapshot) {
-          if (snapshot.hasError) {
-            return Center(
-              child: Text('Алдаа: ${snapshot.error}'),
-            );
-          }
+      body: SafeArea(
+        child: StreamBuilder<QuerySnapshot>(
+          stream: FirebaseFirestore.instance
+              .collection('users')
+              .where(FieldPath.documentId,
+                  whereIn: currentPlayerIds.isEmpty ? [''] : currentPlayerIds)
+              .snapshots()
+              .distinct((prev, next) {
+                // Only rebuild if document IDs or data actually changed
+                if (prev.docs.length != next.docs.length) return false;
+                for (int i = 0; i < prev.docs.length; i++) {
+                  if (prev.docs[i].id != next.docs[i].id) return false;
+                  final prevData = prev.docs[i].data() as Map<String, dynamic>;
+                  final nextData = next.docs[i].data() as Map<String, dynamic>;
+                  if (prevData['displayName'] != nextData['displayName'] ||
+                      prevData['username'] != nextData['username'] ||
+                      prevData['photoUrl'] != nextData['photoUrl']) {
+                    return false;
+                  }
+                }
+                return true; // Data is the same, skip rebuild
+              }),
+          builder: (context, snapshot) {
+            if (snapshot.hasError) {
+              return Center(
+                child: Text('Алдаа: ${snapshot.error}'),
+              );
+            }
 
-          if (snapshot.connectionState == ConnectionState.waiting) {
-            return const Center(child: CircularProgressIndicator());
-          }
+            if (snapshot.connectionState == ConnectionState.waiting) {
+              return const Center(child: CircularProgressIndicator());
+            }
 
-          if (!snapshot.hasData || snapshot.data!.docs.isEmpty) {
-            return const Center(
-              child: Text('Тоглогч олдсонгүй'),
-            );
-          }
+            if (!snapshot.hasData || snapshot.data!.docs.isEmpty) {
+              return const Center(
+                child: Text('Тоглогч олдсонгүй'),
+              );
+            }
 
-          final playersById = {
-            for (final doc in snapshot.data!.docs) doc.id: doc
-          };
-          final players = currentPlayerIds
-              .where((id) => playersById.containsKey(id))
-              .map((id) => playersById[id]!)
-              .toList();
-          final scoreOrderIndices = _scoreOrderIndices(players.length);
-          final effectiveActiveIndex = scoreOrderIndices
-                  .contains(_activeScoreIndex)
-              ? _activeScoreIndex
-              : (scoreOrderIndices.isNotEmpty ? scoreOrderIndices.first : -1);
+            final playersById = {
+              for (final doc in snapshot.data!.docs) doc.id: doc
+            };
+            final players = currentPlayerIds
+                .where((id) => playersById.containsKey(id))
+                .map((id) => playersById[id]!)
+                .toList();
+            final scoreOrderIndices = _scoreOrderIndices(players.length);
+            final effectiveActiveIndex = scoreOrderIndices
+                    .contains(_activeScoreIndex)
+                ? _activeScoreIndex
+                : (scoreOrderIndices.isNotEmpty ? scoreOrderIndices.first : -1);
 
-          // For 1-4 players: show in grid layout (5 columns)
-          if (players.length <= 4) {
-            return Padding(
-              padding: const EdgeInsets.all(24),
-              child: GridView.builder(
-                gridDelegate: const SliverGridDelegateWithFixedCrossAxisCount(
-                  crossAxisCount: 5,
-                  crossAxisSpacing: 12,
-                  mainAxisSpacing: 12,
-                  childAspectRatio: 0.52,
-                ),
-                itemCount: players.length,
-                itemBuilder: (context, index) {
-                  final player = players[index];
-                  final data = player.data() as Map<String, dynamic>;
-                  final displayName =
-                      data['displayName'] ?? data['username'] ?? 'Хэрэглэгч';
-                  final photoUrl = data['photoUrl'];
-                  final actualIndex = index;
+            // For 1-4 players: show in grid layout (2 columns for iOS)
+            if (players.length <= 4) {
+              return Padding(
+                padding: const EdgeInsets.all(12),
+                child: GridView.builder(
+                  cacheExtent: 500,
+                  addAutomaticKeepAlives: true,
+                  addRepaintBoundaries: true,
+                  gridDelegate: SliverGridDelegateWithFixedCrossAxisCount(
+                    crossAxisCount: screenWidth < 380 ? 2 : 2,
+                    crossAxisSpacing: 8,
+                    mainAxisSpacing: 8,
+                    childAspectRatio: 0.62,
+                  ),
+                  itemCount: players.length,
+                  itemBuilder: (context, index) {
+                    final player = players[index];
+                    final data = player.data() as Map<String, dynamic>;
+                    final displayName =
+                        data['displayName'] ?? data['username'] ?? 'Хэрэглэгч';
+                    final photoUrl = data['photoUrl'];
+                    final actualIndex = index;
 
-                  return Card(
-                    elevation: 12,
-                    shape: RoundedRectangleBorder(
-                      borderRadius: BorderRadius.circular(20),
-                    ),
-                    child: Container(
-                      decoration: BoxDecoration(
-                        gradient: LinearGradient(
-                          begin: Alignment.topLeft,
-                          end: Alignment.bottomRight,
-                          colors: [
-                            Colors.blue.shade700,
-                            Colors.blue.shade400,
-                          ],
-                        ),
-                        borderRadius: BorderRadius.circular(20),
-                        border: Border.all(
-                          color: _failedPlayerIds.contains(player.id)
-                              ? Colors.red
-                              : Colors.green.shade400,
-                          width: _failedPlayerIds.contains(player.id) ? 4 : 3,
-                        ),
-                      ),
-                      child: PlayerScoreCard(
-                        playerIndex: actualIndex,
-                        totalPlayers: players.length,
-                        displayName: displayName,
-                        photoUrl: photoUrl,
-                        score: playerScores[actualIndex] ?? '',
-                        totalScore: _totalScores[player.id] ?? 0,
-                        autoFocus: actualIndex == effectiveActiveIndex &&
-                            !_failedPlayerIds.contains(player.id),
-                        isFailed: _failedPlayerIds.contains(player.id),
-                        winAmount: _winAmounts[player.id] ?? 0,
-                        lossAmount: _lossAmounts[player.id] ?? 0,
-                        winStars: _winStars[player.id] ?? 0,
-                        onScoreChanged: (score) {
-                          setState(() {
-                            playerScores[actualIndex] = score;
-                          });
-                        },
-                        onSubmit: () => _handleScoreSubmit(
-                          actualIndex,
-                          scoreOrderIndices,
-                          players,
-                        ),
-                        onPrevious: _previousPlayer,
-                      ),
-                    ),
-                  );
-                },
-              ),
-            );
-          }
-
-          // For 5+ players: keep 4 active (large) and the rest on bench (small)
-          final benchCount = players.length > 4 ? players.length - 4 : 0;
-          final largePlayers = players.sublist(benchCount);
-          final smallPlayers =
-              benchCount > 0 ? players.sublist(0, benchCount) : [];
-
-          return Padding(
-            padding: const EdgeInsets.all(24),
-            child: Row(
-              crossAxisAlignment: CrossAxisAlignment.start,
-              children: [
-                // Left side: Players 4-7 in grid (4 columns, green border)
-                Expanded(
-                  flex: 4,
-                  child: GridView.builder(
-                    shrinkWrap: true,
-                    gridDelegate:
-                        const SliverGridDelegateWithFixedCrossAxisCount(
-                      crossAxisCount: 4,
-                      crossAxisSpacing: 12,
-                      mainAxisSpacing: 12,
-                      childAspectRatio: 0.52,
-                    ),
-                    itemCount: largePlayers.length,
-                    itemBuilder: (context, index) {
-                      final player = largePlayers[index];
-                      final data = player.data() as Map<String, dynamic>;
-                      final displayName = data['displayName'] ??
-                          data['username'] ??
-                          'Хэрэглэгч';
-                      final photoUrl = data['photoUrl'];
-                      final actualIndex = players.indexOf(player);
-
-                      return Card(
-                        elevation: 12,
+                    return RepaintBoundary(
+                      child: Card(
+                        key: ValueKey(player.id),
+                        elevation: 8,
                         shape: RoundedRectangleBorder(
-                          borderRadius: BorderRadius.circular(20),
+                          borderRadius: BorderRadius.circular(16),
                         ),
                         child: Container(
                           decoration: BoxDecoration(
@@ -2257,134 +2204,231 @@ class _CardPokerPageState extends State<CardPokerPage>
                                 Colors.blue.shade400,
                               ],
                             ),
+                            borderRadius: BorderRadius.circular(16),
                             border: Border.all(
                               color: _failedPlayerIds.contains(player.id)
                                   ? Colors.red
                                   : Colors.green.shade400,
-                              width:
-                                  _failedPlayerIds.contains(player.id) ? 4 : 3,
+                              width: _failedPlayerIds.contains(player.id) ? 3 : 2,
                             ),
-                            borderRadius: BorderRadius.circular(20),
                           ),
-                          child: PlayerScoreCard(
-                            playerIndex: actualIndex,
-                            totalPlayers: players.length,
-                            displayName: displayName,
-                            photoUrl: photoUrl,
-                            score: playerScores[actualIndex] ?? '',
-                            totalScore: _totalScores[player.id] ?? 0,
-                            autoFocus: actualIndex == effectiveActiveIndex &&
-                                !_failedPlayerIds.contains(player.id),
-                            isFailed: _failedPlayerIds.contains(player.id),
-                            winAmount: _winAmounts[player.id] ?? 0,
-                            lossAmount: _lossAmounts[player.id] ?? 0,
-                            winStars: _winStars[player.id] ?? 0,
-                            onScoreChanged: (score) {
-                              setState(() {
-                                playerScores[actualIndex] = score;
-                              });
-                            },
-                            onSubmit: () => _handleScoreSubmit(
-                              actualIndex,
-                              scoreOrderIndices,
-                              players,
-                            ),
-                            onPrevious: _previousPlayer,
+                          child: PlayerScoreCardIOS(
+                          playerIndex: actualIndex,
+                          totalPlayers: players.length,
+                          displayName: displayName,
+                          photoUrl: photoUrl,
+                          score: playerScores[actualIndex] ?? '',
+                          totalScore: _totalScores[player.id] ?? 0,
+                          autoFocus: actualIndex == effectiveActiveIndex &&
+                              !_failedPlayerIds.contains(player.id),
+                          isFailed: _failedPlayerIds.contains(player.id),
+                          winAmount: _winAmounts[player.id] ?? 0,
+                          lossAmount: _lossAmounts[player.id] ?? 0,
+                          winStars: _winStars[player.id] ?? 0,
+                          onScoreChanged: (score) {
+                            setState(() {
+                              playerScores[actualIndex] = score;
+                            });
+                          },
+                          onSubmit: () => _handleScoreSubmit(
+                            actualIndex,
+                            scoreOrderIndices,
+                            players,
                           ),
+                          onPrevious: _previousPlayer,
                         ),
-                      );
-                    },
-                  ),
+                      ),
+                      ),
+                    );
+                  },
                 ),
-                const SizedBox(width: 12),
-                // Right side: Players 1-3 in column (3 small blocks, yellow border)
-                Expanded(
-                  flex: 1,
-                  child: LayoutBuilder(
-                    builder: (context, constraints) {
-                      final blockCount = smallPlayers.length;
-                      const spacing = 12.0;
-                      final slotHeight =
-                          (constraints.maxHeight - spacing * 2) / 3;
+              );
+            }
 
-                      return Column(
-                        mainAxisAlignment: MainAxisAlignment.start,
-                        mainAxisSize: MainAxisSize.min,
-                        children: List.generate(
-                          blockCount,
-                          (index) {
-                            final player = smallPlayers[index];
-                            final data = player.data() as Map<String, dynamic>;
-                            final displayName = data['displayName'] ??
-                                data['username'] ??
-                                'Хэрэглэгч';
-                            final photoUrl = data['photoUrl'];
-                            final totalScore =
-                                (_totalScores[player.id] ?? 0).toString();
-                            final stars =
-                                (_winStars[player.id] ?? 0).toString();
+            // For 5+ players: keep 4 active (large) and the rest on bench (small)
+            final benchCount = players.length > 4 ? players.length - 4 : 0;
+            final largePlayers = players.sublist(benchCount);
+            final smallPlayers =
+                benchCount > 0 ? players.sublist(0, benchCount) : [];
 
-                            // Хожигдсон бол алдах мөнгө харуулна
-                            final isFailed =
-                                _failedPlayerIds.contains(player.id);
-                            final winAmount = _winAmounts[player.id] ?? 0;
-                            final lossAmount = _lossAmounts[player.id] ?? 0;
+            return Padding(
+              padding: const EdgeInsets.all(12),
+              child: Column(
+                children: [
+                  // Top: Players 4-7 in grid (2 columns for iOS)
+                  Expanded(
+                    child: GridView.builder(
+                      cacheExtent: 300,
+                      addAutomaticKeepAlives: true,
+                      addRepaintBoundaries: true,
+                      gridDelegate:
+                          SliverGridDelegateWithFixedCrossAxisCount(
+                        crossAxisCount: 2,
+                        crossAxisSpacing: 8,
+                        mainAxisSpacing: 8,
+                        childAspectRatio: 0.62,
+                      ),
+                      itemCount: largePlayers.length,
+                      itemBuilder: (context, index) {
+                        final player = largePlayers[index];
+                        final data = player.data() as Map<String, dynamic>;
+                        final displayName = data['displayName'] ??
+                            data['username'] ??
+                            'Хэрэглэгч';
+                        final photoUrl = data['photoUrl'];
+                        final actualIndex = players.indexOf(player);
 
-                            // Авах-Алдах = нийт
-                            final netAmount = winAmount - lossAmount;
-                            final (displayWinAmount, displayLossAmount) =
-                                netAmount > 0
-                                    ? (winAmount, 0)
-                                    : netAmount < 0
-                                        ? (0, lossAmount)
-                                        : (0, 0);
+                        return RepaintBoundary(
+                          child: Card(
+                            key: ValueKey(player.id),
+                            elevation: 8,
+                            shape: RoundedRectangleBorder(
+                              borderRadius: BorderRadius.circular(16),
+                            ),
+                            child: Container(
+                              decoration: BoxDecoration(
+                                gradient: LinearGradient(
+                                  begin: Alignment.topLeft,
+                                  end: Alignment.bottomRight,
+                                  colors: [
+                                    Colors.blue.shade700,
+                                    Colors.blue.shade400,
+                                  ],
+                                ),
+                                border: Border.all(
+                                  color: _failedPlayerIds.contains(player.id)
+                                      ? Colors.red
+                                      : Colors.green.shade400,
+                                  width: _failedPlayerIds.contains(player.id)
+                                      ? 3
+                                      : 2,
+                                ),
+                                borderRadius: BorderRadius.circular(16),
+                              ),
+                              child: PlayerScoreCardIOS(
+                                playerIndex: actualIndex,
+                                totalPlayers: players.length,
+                                displayName: displayName,
+                                photoUrl: photoUrl,
+                                score: playerScores[actualIndex] ?? '',
+                                totalScore: _totalScores[player.id] ?? 0,
+                                autoFocus:
+                                    actualIndex == effectiveActiveIndex &&
+                                        !_failedPlayerIds.contains(player.id),
+                                isFailed: _failedPlayerIds.contains(player.id),
+                                winAmount: _winAmounts[player.id] ?? 0,
+                                lossAmount: _lossAmounts[player.id] ?? 0,
+                                winStars: _winStars[player.id] ?? 0,
+                                onScoreChanged: (score) {
+                                  setState(() {
+                                    playerScores[actualIndex] = score;
+                                  });
+                                },
+                                onSubmit: () => _handleScoreSubmit(
+                                  actualIndex,
+                                  scoreOrderIndices,
+                                  players,
+                                ),
+                                onPrevious: _previousPlayer,
+                              ),
+                            ),
+                          ),
+                        );
+                      },
+                    ),
+                  ),
+                  if (smallPlayers.isNotEmpty) const SizedBox(height: 10),
+                  // Bottom: Players 1-3 in one row (3 columns)
+                  if (smallPlayers.isNotEmpty)
+                    LayoutBuilder(
+                      builder: (context, constraints) {
+                        const spacing = 8.0;
+                        final blockSize =
+                            (constraints.maxWidth - (spacing * 2)) / 3;
 
-                            final moneyWon = displayWinAmount.toString();
-                            final moneyLost = displayLossAmount.toString();
+                        return Row(
+                          mainAxisAlignment: MainAxisAlignment.spaceBetween,
+                          children: smallPlayers
+                              .take(3)
+                              .toList()
+                              .asMap()
+                              .entries
+                              .map((entry) {
+                              final index = entry.key;
+                              final player = entry.value;
+                              final data =
+                                  player.data() as Map<String, dynamic>;
+                              final displayName = data['displayName'] ??
+                                  data['username'] ??
+                                  'Хэрэглэгч';
+                              final photoUrl = data['photoUrl'];
+                                final totalScore =
+                                  (_totalScores[player.id] ?? 0).toString();
+                                final stars =
+                                  (_winStars[player.id] ?? 0).toString();
 
-                            final actualIndex = players.indexOf(player);
+                              // Хожигдсон бол алдах мөнгө харуулна
+                              final isFailed =
+                                  _failedPlayerIds.contains(player.id);
+                              final winAmount = _winAmounts[player.id] ?? 0;
+                              final lossAmount = _lossAmounts[player.id] ?? 0;
 
-                            return Column(
-                              children: [
-                                SizedBox(
-                                  height: slotHeight,
-                                  child: Row(
-                                    children: [
-                                      // Тоглогчийн дугаар (бадж) - зүүн талд
-                                      Container(
-                                        width: 32,
-                                        height: 32,
-                                        decoration: BoxDecoration(
-                                          color: Colors.blue.shade600,
-                                          shape: BoxShape.circle,
-                                          boxShadow: [
-                                            BoxShadow(
-                                              color:
-                                                  Colors.black.withOpacity(0.3),
-                                              blurRadius: 8,
-                                              offset: const Offset(0, 2),
-                                            ),
-                                          ],
-                                        ),
-                                        child: Center(
-                                          child: Text(
-                                            '${actualIndex + 1}',
-                                            style: const TextStyle(
-                                              fontSize: 14,
-                                              fontWeight: FontWeight.bold,
-                                              color: Colors.white,
-                                            ),
+                              // Авах-Алдах = нийт
+                              final netAmount = winAmount - lossAmount;
+                              final (displayWinAmount, displayLossAmount) =
+                                  netAmount > 0
+                                      ? (winAmount, 0)
+                                      : netAmount < 0
+                                          ? (0, lossAmount)
+                                          : (0, 0);
+
+                              final netMoney = netAmount.toString();
+
+                              final actualIndex = players.indexOf(player);
+
+                              return SizedBox(
+                                width: blockSize,
+                                child: Column(
+                                  mainAxisSize: MainAxisSize.min,
+                                  children: [
+                                    // Тоглогчийн дугаар (бадж) - дээр талд
+                                    Container(
+                                      width: 20,
+                                      height: 20,
+                                      decoration: BoxDecoration(
+                                        color: Colors.blue.shade600,
+                                        shape: BoxShape.circle,
+                                        boxShadow: [
+                                          BoxShadow(
+                                            color:
+                                                Colors.black.withOpacity(0.3),
+                                            blurRadius: 4,
+                                            offset: const Offset(0, 1),
+                                          ),
+                                        ],
+                                      ),
+                                      child: Center(
+                                        child: Text(
+                                          '${actualIndex + 1}',
+                                          style: const TextStyle(
+                                            fontSize: 10,
+                                            fontWeight: FontWeight.bold,
+                                            color: Colors.white,
                                           ),
                                         ),
                                       ),
-                                      const SizedBox(width: 6),
-                                      // Блок - баруун талд
-                                      Expanded(
+                                    ),
+                                    const SizedBox(height: 6),
+                                    // Квадрат блок
+                                    Center(
+                                      child: SizedBox(
+                                        width: blockSize,
+                                        height: blockSize * 0.9,
                                         child: Card(
-                                          elevation: 12,
+                                          elevation: 8,
                                           shape: RoundedRectangleBorder(
                                             borderRadius:
-                                                BorderRadius.circular(20),
+                                                BorderRadius.circular(14),
                                           ),
                                           child: Container(
                                             decoration: BoxDecoration(
@@ -2400,224 +2444,123 @@ class _CardPokerPageState extends State<CardPokerPage>
                                                 color: isFailed
                                                     ? Colors.red
                                                     : Colors.amber.shade400,
-                                                width: isFailed ? 4 : 3,
+                                                width: isFailed ? 3 : 2,
                                               ),
                                               borderRadius:
-                                                  BorderRadius.circular(20),
+                                                  BorderRadius.circular(14),
                                             ),
-                                            child: Stack(
+                                            child: Column(
+                                              crossAxisAlignment:
+                                                  CrossAxisAlignment.stretch,
                                               children: [
-                                                // Фон
-                                                Container(
-                                                  decoration: BoxDecoration(
-                                                    gradient: LinearGradient(
-                                                      begin: Alignment.topLeft,
-                                                      end:
-                                                          Alignment.bottomRight,
-                                                      colors: [
-                                                        Colors.blue.shade700,
-                                                        Colors.blue.shade400,
-                                                      ],
-                                                    ),
-                                                    borderRadius:
-                                                        BorderRadius.circular(
-                                                            20),
+                                                const SizedBox(height: 6),
+                                                Text(
+                                                  displayName,
+                                                  textAlign: TextAlign.center,
+                                                  style: const TextStyle(
+                                                    fontSize: 12,
+                                                    fontWeight: FontWeight.bold,
+                                                    color: Colors.white,
                                                   ),
+                                                  maxLines: 1,
+                                                  overflow: TextOverflow.ellipsis,
                                                 ),
-                                                // Зүүн дээд буланд: Зураг + Нэр
-                                                Positioned(
-                                                  left: 12,
-                                                  top: 12,
-                                                  child: Row(
-                                                    crossAxisAlignment:
-                                                        CrossAxisAlignment
-                                                            .center,
-                                                    children: [
-                                                      // Зураг
-                                                      CircleAvatar(
-                                                        radius: 25,
-                                                        backgroundColor:
-                                                            Colors.grey[300],
-                                                        backgroundImage: photoUrl !=
-                                                                    null &&
-                                                                photoUrl
-                                                                    .isNotEmpty
-                                                            ? (photoUrl
-                                                                    .startsWith(
-                                                                        'http')
-                                                                ? NetworkImage(
-                                                                    photoUrl)
-                                                                : AssetImage(
-                                                                        'assets/$photoUrl')
-                                                                    as ImageProvider)
-                                                            : null,
-                                                        child: photoUrl ==
-                                                                    null ||
-                                                                photoUrl.isEmpty
-                                                            ? const Icon(
-                                                                Icons.person,
-                                                                size: 20,
-                                                              )
-                                                            : null,
-                                                      ),
-                                                      const SizedBox(width: 8),
-                                                      // Нэр
-                                                      Flexible(
-                                                        child: Text(
-                                                          displayName,
-                                                          style:
-                                                              const TextStyle(
-                                                            fontSize: 11,
-                                                            fontWeight:
-                                                                FontWeight.bold,
-                                                            color: Colors.white,
-                                                          ),
-                                                          maxLines: 2,
-                                                          overflow: TextOverflow
-                                                              .ellipsis,
-                                                        ),
-                                                      ),
-                                                    ],
+                                                const SizedBox(height: 2),
+                                                Text(
+                                                  data['username'] ?? '',
+                                                  textAlign: TextAlign.center,
+                                                  style: const TextStyle(
+                                                    fontSize: 11,
+                                                    fontWeight: FontWeight.w600,
+                                                    color: Colors.white70,
                                                   ),
+                                                  maxLines: 1,
+                                                  overflow: TextOverflow.ellipsis,
                                                 ),
-                                                // Баруун дээд буланд: Нийт оноо
-                                                Positioned(
-                                                  right: 12,
-                                                  top: 12,
-                                                  child: Container(
-                                                    padding: const EdgeInsets
-                                                        .symmetric(
-                                                        horizontal: 10,
-                                                        vertical: 6),
-                                                    decoration: BoxDecoration(
-                                                      color: Colors.white
-                                                          .withOpacity(0.25),
-                                                      borderRadius:
-                                                          BorderRadius.circular(
-                                                              8),
+                                                const Spacer(),
+                                                Row(
+                                                  mainAxisAlignment:
+                                                      MainAxisAlignment.center,
+                                                  children: [
+                                                    const Icon(
+                                                      Icons.star,
+                                                      color: Colors.amber,
+                                                      size: 16,
                                                     ),
-                                                    child: Column(
-                                                      children: [
-                                                        const Text(
-                                                          'Оноо',
-                                                          style: TextStyle(
-                                                            fontSize: 9,
-                                                            color:
-                                                                Colors.white70,
-                                                          ),
-                                                        ),
-                                                        Text(
-                                                          totalScore,
-                                                          style:
-                                                              const TextStyle(
-                                                            fontSize: 18,
-                                                            fontWeight:
-                                                                FontWeight.bold,
-                                                            color: Colors.white,
-                                                          ),
-                                                        ),
-                                                      ],
-                                                    ),
-                                                  ),
-                                                ),
-                                                // Дээд талд: ⭐ × Тоо (зураг ба онооны хооронд)
-                                                Positioned(
-                                                  left: 0,
-                                                  right: 0,
-                                                  top: 56,
-                                                  child: Row(
-                                                    mainAxisAlignment:
-                                                        MainAxisAlignment
-                                                            .center,
-                                                    children: [
-                                                      const Icon(
-                                                        Icons.star,
-                                                        color: Colors.amber,
-                                                        size: 16,
+                                                    const SizedBox(width: 4),
+                                                    Text(
+                                                      'x $stars',
+                                                      style: const TextStyle(
+                                                        fontSize: 14,
+                                                        fontWeight:
+                                                            FontWeight.bold,
+                                                        color: Colors.white,
                                                       ),
-                                                      const SizedBox(width: 4),
-                                                      const Text(
-                                                        '×',
-                                                        style: TextStyle(
-                                                          fontSize: 12,
+                                                    ),
+                                                    const SizedBox(width: 8),
+                                                    Container(
+                                                      padding:
+                                                          const EdgeInsets.symmetric(
+                                                        horizontal: 8,
+                                                        vertical: 4,
+                                                      ),
+                                                      decoration: BoxDecoration(
+                                                        color: Colors.white
+                                                            .withOpacity(0.25),
+                                                        borderRadius:
+                                                            BorderRadius.circular(
+                                                                6),
+                                                      ),
+                                                      child: Text(
+                                                        totalScore,
+                                                        style: const TextStyle(
+                                                          fontSize: 14,
                                                           fontWeight:
                                                               FontWeight.bold,
                                                           color: Colors.white,
                                                         ),
                                                       ),
-                                                      const SizedBox(width: 4),
-                                                      Text(
-                                                        stars,
-                                                        style: const TextStyle(
-                                                          fontSize: 13,
-                                                          fontWeight:
-                                                              FontWeight.bold,
-                                                          color: Colors.white,
-                                                        ),
-                                                      ),
-                                                    ],
+                                                    ),
+                                                  ],
+                                                ),
+                                                const Spacer(),
+                                                Text(
+                                                  netMoney,
+                                                  textAlign: TextAlign.center,
+                                                  style: TextStyle(
+                                                    fontSize: 16,
+                                                    fontWeight: FontWeight.bold,
+                                                    color: netAmount >= 0
+                                                        ? Colors.green
+                                                        : Colors.red,
                                                   ),
                                                 ),
-                                                // Доод голд: Авах + Алдах
-                                                Positioned(
-                                                  bottom: 12,
-                                                  left: 12,
-                                                  right: 12,
-                                                  child: Row(
-                                                    mainAxisAlignment:
-                                                        MainAxisAlignment
-                                                            .spaceEvenly,
-                                                    children: [
-                                                      Text(
-                                                        moneyWon,
-                                                        style: const TextStyle(
-                                                          fontSize: 18,
-                                                          fontWeight:
-                                                              FontWeight.bold,
-                                                          color: Colors.green,
-                                                        ),
-                                                      ),
-                                                      const SizedBox(width: 12),
-                                                      Text(
-                                                        moneyLost,
-                                                        style: const TextStyle(
-                                                          fontSize: 18,
-                                                          fontWeight:
-                                                              FontWeight.bold,
-                                                          color: Colors.red,
-                                                        ),
-                                                      ),
-                                                    ],
-                                                  ),
-                                                ),
+                                                const SizedBox(height: 8),
                                               ],
                                             ),
                                           ),
                                         ),
                                       ),
-                                    ],
-                                  ),
+                                    ),
+                                  ],
                                 ),
-                                if (index < blockCount - 1)
-                                  const SizedBox(height: spacing),
-                              ],
-                            );
-                          },
-                        ),
-                      );
-                    },
-                  ),
-                ),
-              ],
-            ),
-          );
-        },
+                              );
+                            },
+                          ).toList(),
+                        );
+                      },
+                    ),
+                ],
+              ),
+            );
+          },
+        ),
       ),
     );
   }
 }
 
-class PlayerScoreCard extends StatefulWidget {
+class PlayerScoreCardIOS extends StatefulWidget {
   final int playerIndex;
   final int totalPlayers;
   final String displayName;
@@ -2633,7 +2576,7 @@ class PlayerScoreCard extends StatefulWidget {
   final VoidCallback onSubmit;
   final VoidCallback onPrevious;
 
-  const PlayerScoreCard({
+  const PlayerScoreCardIOS({
     super.key,
     required this.playerIndex,
     required this.totalPlayers,
@@ -2652,12 +2595,16 @@ class PlayerScoreCard extends StatefulWidget {
   });
 
   @override
-  State<PlayerScoreCard> createState() => _PlayerScoreCardState();
+  State<PlayerScoreCardIOS> createState() => _PlayerScoreCardIOSState();
 }
 
-class _PlayerScoreCardState extends State<PlayerScoreCard> {
+class _PlayerScoreCardIOSState extends State<PlayerScoreCardIOS> 
+    with AutomaticKeepAliveClientMixin {
   late TextEditingController _scoreController;
   late FocusNode _focusNode;
+
+  @override
+  bool get wantKeepAlive => true;
 
   @override
   void initState() {
@@ -2698,7 +2645,7 @@ class _PlayerScoreCardState extends State<PlayerScoreCard> {
   }
 
   @override
-  void didUpdateWidget(PlayerScoreCard oldWidget) {
+  void didUpdateWidget(PlayerScoreCardIOS oldWidget) {
     super.didUpdateWidget(oldWidget);
     if (oldWidget.playerIndex != widget.playerIndex) {
       _scoreController.text = widget.score;
@@ -2726,9 +2673,9 @@ class _PlayerScoreCardState extends State<PlayerScoreCard> {
       context: context,
       builder: (BuildContext context) {
         return AlertDialog(
-          title: const Text('Буруу утга'),
+          title: const Text('Буруу утга', style: TextStyle(fontSize: 16)),
           content:
-              Text('Оноо 1-13 хүртэл байх ёстой. Та $score оруулсан байна.'),
+              Text('Оноо 1-13 хүртэл байх ёстой. Та $score оруулсан байна.', style: const TextStyle(fontSize: 14)),
           actions: [
             TextButton(
               onPressed: () {
@@ -2749,9 +2696,10 @@ class _PlayerScoreCardState extends State<PlayerScoreCard> {
 
   @override
   Widget build(BuildContext context) {
+    super.build(context); // Must call for AutomaticKeepAliveClientMixin
     return SingleChildScrollView(
       child: Padding(
-        padding: const EdgeInsets.all(12.0),
+        padding: const EdgeInsets.all(8.0),
         child: Column(
           mainAxisAlignment: MainAxisAlignment.start,
           crossAxisAlignment: CrossAxisAlignment.center,
@@ -2759,39 +2707,45 @@ class _PlayerScoreCardState extends State<PlayerScoreCard> {
             // Avatar - centered, sized to fit block
             LayoutBuilder(
               builder: (context, constraints) {
-                final avatarSize = constraints.maxWidth;
-                return Container(
-                  width: avatarSize,
-                  height: avatarSize,
-                  decoration: BoxDecoration(
-                    color: Colors.white.withOpacity(0.2),
-                    borderRadius: BorderRadius.circular(10),
-                  ),
-                  child: ClipRRect(
-                    borderRadius: BorderRadius.circular(10),
-                    child:
-                        widget.photoUrl != null && widget.photoUrl!.isNotEmpty
-                            ? (widget.photoUrl!.startsWith('http')
-                                ? Image.network(
-                                    widget.photoUrl!,
-                                    fit: BoxFit.cover,
-                                  )
-                                : Image.asset(
-                                    'assets/${widget.photoUrl}',
-                                    fit: BoxFit.cover,
-                                  ))
-                            : const Icon(Icons.person,
-                                size: 60, color: Colors.white),
+                final avatarSize = constraints.maxWidth * 0.85;
+                return RepaintBoundary(
+                  child: Container(
+                    width: avatarSize,
+                    height: avatarSize,
+                    decoration: BoxDecoration(
+                      color: Colors.white.withOpacity(0.2),
+                      borderRadius: BorderRadius.circular(8),
+                    ),
+                    child: ClipRRect(
+                      borderRadius: BorderRadius.circular(8),
+                      child:
+                          widget.photoUrl != null && widget.photoUrl!.isNotEmpty
+                              ? (widget.photoUrl!.startsWith('http')
+                                  ? Image.network(
+                                      widget.photoUrl!,
+                                      fit: BoxFit.cover,
+                                      cacheWidth: 200,
+                                      cacheHeight: 200,
+                                    )
+                                  : Image.asset(
+                                      'assets/${widget.photoUrl}',
+                                      fit: BoxFit.cover,
+                                      cacheWidth: 200,
+                                      cacheHeight: 200,
+                                    ))
+                              : const Icon(Icons.person,
+                                  size: 40, color: Colors.white),
+                    ),
                   ),
                 );
               },
             ),
-            const SizedBox(height: 8),
+            const SizedBox(height: 6),
             // Player name
             Text(
               widget.displayName,
               style: const TextStyle(
-                fontSize: 18,
+                fontSize: 13,
                 fontWeight: FontWeight.bold,
                 color: Colors.white,
               ),
@@ -2799,7 +2753,7 @@ class _PlayerScoreCardState extends State<PlayerScoreCard> {
               maxLines: 2,
               overflow: TextOverflow.ellipsis,
             ),
-            const SizedBox(height: 8),
+            const SizedBox(height: 6),
             // Win calculation (Хожил)
             Row(
               mainAxisAlignment: MainAxisAlignment.center,
@@ -2807,33 +2761,33 @@ class _PlayerScoreCardState extends State<PlayerScoreCard> {
                 const Text(
                   'Хожил: ',
                   style: TextStyle(
-                    fontSize: 18,
+                    fontSize: 12,
                     fontWeight: FontWeight.bold,
                     color: Colors.white,
                   ),
                 ),
-                const Icon(Icons.star, color: Colors.amber, size: 20),
-                const SizedBox(width: 2),
+                const Icon(Icons.star, color: Colors.amber, size: 14),
+                const SizedBox(width: 1),
                 const Text(
                   '×',
                   style: TextStyle(
-                    fontSize: 18,
+                    fontSize: 12,
                     fontWeight: FontWeight.bold,
                     color: Colors.white,
                   ),
                 ),
-                const SizedBox(width: 2),
+                const SizedBox(width: 1),
                 Text(
                   widget.winStars.toString(),
                   style: const TextStyle(
-                    fontSize: 18,
+                    fontSize: 12,
                     fontWeight: FontWeight.bold,
                     color: Colors.white,
                   ),
                 ),
               ],
             ),
-            const SizedBox(height: 10),
+            const SizedBox(height: 8),
             // Two boxes in one row: Score input + Total score
             Row(
               children: [
@@ -2842,13 +2796,13 @@ class _PlayerScoreCardState extends State<PlayerScoreCard> {
                   child: Container(
                     decoration: BoxDecoration(
                       color: Colors.white.withOpacity(0.1),
-                      borderRadius: BorderRadius.circular(8),
+                      borderRadius: BorderRadius.circular(6),
                       border: Border.all(
                         color: Colors.white.withOpacity(0.3),
                         width: 1,
                       ),
                     ),
-                    padding: const EdgeInsets.all(8),
+                    padding: const EdgeInsets.all(6),
                     child: Opacity(
                       opacity: widget.isFailed ? 0.5 : 1.0,
                       child: Column(
@@ -2857,13 +2811,13 @@ class _PlayerScoreCardState extends State<PlayerScoreCard> {
                             'Оноо',
                             style: TextStyle(
                               color: Colors.white70,
-                              fontSize: 14,
+                              fontSize: 10,
                               fontWeight: FontWeight.w500,
                             ),
                           ),
-                          const SizedBox(height: 4),
+                          const SizedBox(height: 2),
                           SizedBox(
-                            height: 40,
+                            height: 32,
                             child: TextField(
                               controller: _scoreController,
                               focusNode: _focusNode,
@@ -2871,7 +2825,7 @@ class _PlayerScoreCardState extends State<PlayerScoreCard> {
                               keyboardType: TextInputType.number,
                               style: const TextStyle(
                                 color: Colors.white,
-                                fontSize: 24,
+                                fontSize: 18,
                                 fontWeight: FontWeight.bold,
                               ),
                               textAlign: TextAlign.center,
@@ -2879,7 +2833,7 @@ class _PlayerScoreCardState extends State<PlayerScoreCard> {
                                 hintText: '0',
                                 hintStyle: TextStyle(
                                   color: Colors.white.withOpacity(0.3),
-                                  fontSize: 24,
+                                  fontSize: 18,
                                 ),
                                 border: InputBorder.none,
                                 contentPadding:
@@ -2932,19 +2886,19 @@ class _PlayerScoreCardState extends State<PlayerScoreCard> {
                     ),
                   ),
                 ),
-                const SizedBox(width: 8),
+                const SizedBox(width: 6),
                 // Total score display box
                 Expanded(
                   child: Container(
                     decoration: BoxDecoration(
                       color: Colors.white.withOpacity(0.15),
-                      borderRadius: BorderRadius.circular(8),
+                      borderRadius: BorderRadius.circular(6),
                       border: Border.all(
                         color: Colors.white.withOpacity(0.3),
                         width: 1,
                       ),
                     ),
-                    padding: const EdgeInsets.all(8),
+                    padding: const EdgeInsets.all(6),
                     child: Opacity(
                       opacity: widget.isFailed ? 0.5 : 1.0,
                       child: Column(
@@ -2953,16 +2907,16 @@ class _PlayerScoreCardState extends State<PlayerScoreCard> {
                             'Нийт',
                             style: TextStyle(
                               color: Colors.white70,
-                              fontSize: 14,
+                              fontSize: 10,
                               fontWeight: FontWeight.w500,
                             ),
                           ),
-                          const SizedBox(height: 4),
+                          const SizedBox(height: 2),
                           Center(
                             child: Text(
                               widget.totalScore.toString(),
                               style: const TextStyle(
-                                fontSize: 28,
+                                fontSize: 20,
                                 fontWeight: FontWeight.bold,
                                 color: Colors.white,
                               ),
@@ -2975,7 +2929,7 @@ class _PlayerScoreCardState extends State<PlayerScoreCard> {
                 ),
               ],
             ),
-            const SizedBox(height: 10),
+            const SizedBox(height: 8),
             // Win/Loss stats row (larger font)
             Row(
               mainAxisAlignment: MainAxisAlignment.spaceEvenly,
@@ -2984,7 +2938,7 @@ class _PlayerScoreCardState extends State<PlayerScoreCard> {
                 Text(
                   widget.winAmount.toString(),
                   style: TextStyle(
-                    fontSize: 20,
+                    fontSize: 15,
                     fontWeight: FontWeight.bold,
                     color: Colors.green.shade300,
                   ),
@@ -2993,13 +2947,13 @@ class _PlayerScoreCardState extends State<PlayerScoreCard> {
                 Icon(
                   Icons.monetization_on,
                   color: Colors.yellow.shade300,
-                  size: 24,
+                  size: 18,
                 ),
                 // Loss amount (red)
                 Text(
                   widget.lossAmount.toString(),
                   style: TextStyle(
-                    fontSize: 20,
+                    fontSize: 15,
                     fontWeight: FontWeight.bold,
                     color: Colors.red.shade300,
                   ),
