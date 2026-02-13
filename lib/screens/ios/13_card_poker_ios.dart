@@ -2266,7 +2266,7 @@ class _CardPokerPageIOSState extends State<CardPokerPageIOS>
                         crossAxisCount: 2,
                         crossAxisSpacing: 8,
                         mainAxisSpacing: 8,
-                        childAspectRatio: 0.62,
+                        childAspectRatio: 0.66,
                       ),
                       itemCount: largePlayers.length,
                       itemBuilder: (context, index) {
@@ -2338,215 +2338,185 @@ class _CardPokerPageIOSState extends State<CardPokerPageIOS>
                     ),
                   ),
                   if (smallPlayers.isNotEmpty) const SizedBox(height: 10),
-                  // Bottom: Players 1-3 in one row (3 columns)
+                  // Bottom: Players 1-3 in 3 columns (square blocks)
                   if (smallPlayers.isNotEmpty)
                     LayoutBuilder(
                       builder: (context, constraints) {
                         const spacing = 8.0;
-                        final blockSize =
-                            (constraints.maxWidth - (spacing * 2)) / 3;
+                        final blockSize = (constraints.maxWidth - spacing * 2) / 3;
+                        final benchPlayers =
+                            smallPlayers.take(3).toList().asMap().entries;
 
-                        return Row(
-                          mainAxisAlignment: MainAxisAlignment.spaceBetween,
-                          children: smallPlayers
-                              .take(3)
-                              .toList()
-                              .asMap()
-                              .entries
-                              .map((entry) {
-                              final index = entry.key;
-                              final player = entry.value;
-                              final data =
-                                  player.data() as Map<String, dynamic>;
-                              final displayName = data['displayName'] ??
-                                  data['username'] ??
-                                  'Хэрэглэгч';
-                              final photoUrl = data['photoUrl'];
-                                final totalScore =
-                                  (_totalScores[player.id] ?? 0).toString();
-                                final stars =
-                                  (_winStars[player.id] ?? 0).toString();
+                        return GridView.builder(
+                          shrinkWrap: true,
+                          physics: const NeverScrollableScrollPhysics(),
+                          gridDelegate:
+                              SliverGridDelegateWithFixedCrossAxisCount(
+                            crossAxisCount: 3,
+                            mainAxisSpacing: spacing,
+                            crossAxisSpacing: spacing,
+                            childAspectRatio: 1.1,
+                          ),
+                          itemCount: benchPlayers.length,
+                          itemBuilder: (context, index) {
+                            final entry =
+                                benchPlayers.elementAt(index);
+                            final player = entry.value;
+                            final data = player.data() as Map<String, dynamic>;
+                            final displayName = data['displayName'] ??
+                                data['username'] ??
+                                'Хэрэглэгч';
+                            final username = data['username'] ?? '';
+                            final totalScore =
+                                (_totalScores[player.id] ?? 0).toString();
+                            final stars =
+                                (_winStars[player.id] ?? 0).toString();
 
-                              // Хожигдсон бол алдах мөнгө харуулна
-                              final isFailed =
-                                  _failedPlayerIds.contains(player.id);
-                              final winAmount = _winAmounts[player.id] ?? 0;
-                              final lossAmount = _lossAmounts[player.id] ?? 0;
+                            final isFailed =
+                                _failedPlayerIds.contains(player.id);
+                            final winAmount = _winAmounts[player.id] ?? 0;
+                            final lossAmount = _lossAmounts[player.id] ?? 0;
+                            final netAmount = winAmount - lossAmount;
+                            final netMoney = netAmount.toString();
+                            final actualIndex = players.indexOf(player);
 
-                              // Авах-Алдах = нийт
-                              final netAmount = winAmount - lossAmount;
-                              final (displayWinAmount, displayLossAmount) =
-                                  netAmount > 0
-                                      ? (winAmount, 0)
-                                      : netAmount < 0
-                                          ? (0, lossAmount)
-                                          : (0, 0);
-
-                              final netMoney = netAmount.toString();
-
-                              final actualIndex = players.indexOf(player);
-
-                              return SizedBox(
-                                width: blockSize,
-                                child: Column(
-                                  mainAxisSize: MainAxisSize.min,
-                                  children: [
-                                    // Тоглогчийн дугаар (бадж) - дээр талд
-                                    Container(
-                                      width: 20,
-                                      height: 20,
-                                      decoration: BoxDecoration(
-                                        color: Colors.blue.shade600,
-                                        shape: BoxShape.circle,
-                                        boxShadow: [
-                                          BoxShadow(
-                                            color:
-                                                Colors.black.withOpacity(0.3),
-                                            blurRadius: 4,
-                                            offset: const Offset(0, 1),
-                                          ),
+                            return Stack(
+                              children: [
+                                // Main card
+                                Card(
+                                  elevation: 8,
+                                  shape: RoundedRectangleBorder(
+                                    borderRadius: BorderRadius.circular(12),
+                                  ),
+                                  child: Container(
+                                    padding: const EdgeInsets.all(8),
+                                    decoration: BoxDecoration(
+                                      gradient: LinearGradient(
+                                        begin: Alignment.topLeft,
+                                        end: Alignment.bottomRight,
+                                        colors: [
+                                          Colors.blue.shade700,
+                                          Colors.blue.shade400,
                                         ],
                                       ),
-                                      child: Center(
-                                        child: Text(
-                                          '${actualIndex + 1}',
-                                          style: const TextStyle(
-                                            fontSize: 10,
-                                            fontWeight: FontWeight.bold,
-                                            color: Colors.white,
+                                      border: Border.all(
+                                        color: isFailed
+                                            ? Colors.red
+                                            : Colors.amber.shade400,
+                                        width: isFailed ? 3 : 2,
+                                      ),
+                                      borderRadius: BorderRadius.circular(12),
+                                    ),
+                                    child: Column(
+                                      mainAxisAlignment:
+                                          MainAxisAlignment.spaceBetween,
+                                      children: [
+                                        // Top: Player name
+                                        Expanded(
+                                          child: Column(
+                                            mainAxisAlignment:
+                                                MainAxisAlignment.center,
+                                            children: [
+                                              Text(
+                                                displayName,
+                                                style: const TextStyle(
+                                                  fontSize: 13,
+                                                  fontWeight: FontWeight.bold,
+                                                  color: Colors.white,
+                                                ),
+                                                maxLines: 1,
+                                                overflow: TextOverflow.ellipsis,
+                                              ),
+                                            ],
                                           ),
                                         ),
-                                      ),
-                                    ),
-                                    const SizedBox(height: 6),
-                                    // Квадрат блок
-                                    Center(
-                                      child: SizedBox(
-                                        width: blockSize,
-                                        height: blockSize * 0.9,
-                                        child: Card(
-                                          elevation: 8,
-                                          shape: RoundedRectangleBorder(
-                                            borderRadius:
-                                                BorderRadius.circular(14),
-                                          ),
-                                          child: Container(
-                                            decoration: BoxDecoration(
-                                              gradient: LinearGradient(
-                                                begin: Alignment.topLeft,
-                                                end: Alignment.bottomRight,
-                                                colors: [
-                                                  Colors.blue.shade700,
-                                                  Colors.blue.shade400,
-                                                ],
-                                              ),
-                                              border: Border.all(
+                                        // Middle: Score and stars
+                                        Row(
+                                          mainAxisAlignment:
+                                              MainAxisAlignment.center,
+                                          children: [
+                                            Text(
+                                              totalScore,
+                                              style: TextStyle(
+                                                fontSize: 14,
+                                                fontWeight: FontWeight.bold,
                                                 color: isFailed
                                                     ? Colors.red
-                                                    : Colors.amber.shade400,
-                                                width: isFailed ? 3 : 2,
+                                                    : Colors.white,
                                               ),
-                                              borderRadius:
-                                                  BorderRadius.circular(14),
                                             ),
-                                            child: Column(
-                                              crossAxisAlignment:
-                                                  CrossAxisAlignment.stretch,
-                                              children: [
-                                                const SizedBox(height: 6),
-                                                Text(
-                                                  displayName,
-                                                  textAlign: TextAlign.center,
-                                                  style: const TextStyle(
-                                                    fontSize: 12,
-                                                    fontWeight: FontWeight.bold,
-                                                    color: Colors.white,
-                                                  ),
-                                                  maxLines: 1,
-                                                  overflow: TextOverflow.ellipsis,
-                                                ),
-                                                const SizedBox(height: 2),
-                                                Text(
-                                                  data['username'] ?? '',
-                                                  textAlign: TextAlign.center,
-                                                  style: const TextStyle(
-                                                    fontSize: 11,
-                                                    fontWeight: FontWeight.w600,
-                                                    color: Colors.white70,
-                                                  ),
-                                                  maxLines: 1,
-                                                  overflow: TextOverflow.ellipsis,
-                                                ),
-                                                const Spacer(),
-                                                Row(
-                                                  mainAxisAlignment:
-                                                      MainAxisAlignment.center,
-                                                  children: [
-                                                    const Icon(
-                                                      Icons.star,
-                                                      color: Colors.amber,
-                                                      size: 16,
-                                                    ),
-                                                    const SizedBox(width: 4),
-                                                    Text(
-                                                      'x $stars',
-                                                      style: const TextStyle(
-                                                        fontSize: 14,
-                                                        fontWeight:
-                                                            FontWeight.bold,
-                                                        color: Colors.white,
-                                                      ),
-                                                    ),
-                                                    const SizedBox(width: 8),
-                                                    Container(
-                                                      padding:
-                                                          const EdgeInsets.symmetric(
-                                                        horizontal: 8,
-                                                        vertical: 4,
-                                                      ),
-                                                      decoration: BoxDecoration(
-                                                        color: Colors.white
-                                                            .withOpacity(0.25),
-                                                        borderRadius:
-                                                            BorderRadius.circular(
-                                                                6),
-                                                      ),
-                                                      child: Text(
-                                                        totalScore,
-                                                        style: const TextStyle(
-                                                          fontSize: 14,
-                                                          fontWeight:
-                                                              FontWeight.bold,
-                                                          color: Colors.white,
-                                                        ),
-                                                      ),
-                                                    ),
-                                                  ],
-                                                ),
-                                                const Spacer(),
-                                                Text(
-                                                  netMoney,
-                                                  textAlign: TextAlign.center,
-                                                  style: TextStyle(
-                                                    fontSize: 16,
-                                                    fontWeight: FontWeight.bold,
-                                                    color: netAmount >= 0
-                                                        ? Colors.green
-                                                        : Colors.red,
-                                                  ),
-                                                ),
-                                                const SizedBox(height: 8),
-                                              ],
+                                            const SizedBox(width: 4),
+                                            Container(
+                                              width: 3,
+                                              height: 16,
+                                              color: Colors.white30,
                                             ),
+                                            const SizedBox(width: 4),
+                                            const Icon(
+                                              Icons.star,
+                                              color: Colors.amber,
+                                              size: 12,
+                                            ),
+                                            const SizedBox(width: 2),
+                                            Text(
+                                              'x $stars',
+                                              style: const TextStyle(
+                                                fontSize: 11,
+                                                fontWeight:
+                                                    FontWeight.bold,
+                                                color: Colors.white,
+                                              ),
+                                            ),
+                                          ],
+                                        ),
+                                        // Bottom: Money
+                                        Text(
+                                          netMoney,
+                                          style: TextStyle(
+                                            fontSize: 13,
+                                            fontWeight: FontWeight.bold,
+                                            color: netAmount >= 0
+                                                ? Colors.green
+                                                : Colors.red,
                                           ),
+                                        ),
+                                      ],
+                                    ),
+                                  ),
+                                ),
+                                // Number badge (top left)
+                                Positioned(
+                                  top: -8,
+                                  left: -8,
+                                  child: Container(
+                                    width: 28,
+                                    height: 28,
+                                    decoration: BoxDecoration(
+                                      color: Colors.blue.shade600,
+                                      shape: BoxShape.circle,
+                                      boxShadow: [
+                                        BoxShadow(
+                                          color: Colors.black.withOpacity(0.3),
+                                          blurRadius: 4,
+                                          offset: const Offset(0, 1),
+                                        ),
+                                      ],
+                                    ),
+                                    child: Center(
+                                      child: Text(
+                                        '${actualIndex + 1}',
+                                        style: const TextStyle(
+                                          fontSize: 12,
+                                          fontWeight: FontWeight.bold,
+                                          color: Colors.white,
                                         ),
                                       ),
                                     ),
-                                  ],
+                                  ),
                                 ),
-                              );
-                            },
-                          ).toList(),
+                              ],
+                            );
+                          },
                         );
                       },
                     ),
@@ -2707,7 +2677,7 @@ class _PlayerScoreCardIOSState extends State<PlayerScoreCardIOS>
             // Avatar - centered, sized to fit block
             LayoutBuilder(
               builder: (context, constraints) {
-                final avatarSize = constraints.maxWidth * 0.85;
+                final avatarSize = constraints.maxWidth * 0.68;
                 return RepaintBoundary(
                   child: Container(
                     width: avatarSize,
@@ -2932,30 +2902,24 @@ class _PlayerScoreCardIOSState extends State<PlayerScoreCardIOS>
             const SizedBox(height: 8),
             // Win/Loss stats row (larger font)
             Row(
-              mainAxisAlignment: MainAxisAlignment.spaceEvenly,
+              mainAxisAlignment: MainAxisAlignment.center,
               children: [
-                // Win amount (green)
-                Text(
-                  widget.winAmount.toString(),
+                const Text(
+                  'Бооцоо: ',
                   style: TextStyle(
-                    fontSize: 15,
+                    fontSize: 14,
                     fontWeight: FontWeight.bold,
-                    color: Colors.green.shade300,
+                    color: Colors.white,
                   ),
                 ),
-                // Coin icon (center)
-                Icon(
-                  Icons.monetization_on,
-                  color: Colors.yellow.shade300,
-                  size: 18,
-                ),
-                // Loss amount (red)
                 Text(
-                  widget.lossAmount.toString(),
+                  (widget.winAmount - widget.lossAmount).toString(),
                   style: TextStyle(
                     fontSize: 15,
                     fontWeight: FontWeight.bold,
-                    color: Colors.red.shade300,
+                    color: (widget.winAmount - widget.lossAmount) >= 0
+                        ? Colors.green.shade300
+                        : Colors.red.shade300,
                   ),
                 ),
               ],
