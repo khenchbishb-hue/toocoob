@@ -1937,28 +1937,7 @@ class _CardPokerPageState extends State<CardPokerPage>
           }
         }
       } else if (nonFailedCount >= 2) {
-        // 2+ тоглогч хожигдоогүй байвал энэ тоглолтын ялагчийг тодорхойлох
-        // Хамгийн бага оноотой (хамгийн сайн тоглосон) тоглогчийг олох
-        String? roundWinnerId;
-        int lowestScore = 999999;
-
-        for (final playerId in currentPlayerIds) {
-          if (!_failedPlayerIds.contains(playerId)) {
-            final score = _totalScores[playerId] ?? 0;
-            if (score < lowestScore) {
-              lowestScore = score;
-              roundWinnerId = playerId;
-            }
-          }
-        }
-
-        // Энэ тоглолтын ялагчийг тэмдэглэх
-        if (roundWinnerId != null) {
-          setState(() {
-            _winStars[roundWinnerId!] = (_winStars[roundWinnerId] ?? 0) + 1;
-          });
-        }
-
+        // 2+ тоглогч хожигдоогүй байвал шалгаж асуух
         // Хожсон тоглогчдын нийт тоог шалгах (идэвхтэй тоглогчийн тоотой тэнцэх үед л асуух)
         final totalWinsAcrossPlayers =
             _winStars.values.fold<int>(0, (sum, wins) => sum + wins);

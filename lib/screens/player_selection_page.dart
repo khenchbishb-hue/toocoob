@@ -61,11 +61,11 @@ class _PlayerSelectionPageState extends State<PlayerSelectionPage> {
             ),
         ],
         bottom: PreferredSize(
-          preferredSize: const Size.fromHeight(60),
+          preferredSize: const Size.fromHeight(96),
           child: Padding(
             padding: const EdgeInsets.only(bottom: 12),
-            child: Row(
-              mainAxisAlignment: MainAxisAlignment.spaceBetween,
+            child: Column(
+              mainAxisSize: MainAxisSize.min,
               children: [
                 Text(
                   'Сонгогдсон: ${_selectedUsers.length}',
@@ -74,6 +74,7 @@ class _PlayerSelectionPageState extends State<PlayerSelectionPage> {
                     fontWeight: FontWeight.bold,
                   ),
                 ),
+                const SizedBox(height: 10),
                 ElevatedButton.icon(
                   onPressed: _selectedUsers.isNotEmpty
                       ? () {
@@ -98,14 +99,14 @@ class _PlayerSelectionPageState extends State<PlayerSelectionPage> {
                     'Ширээнд урих',
                     style: TextStyle(
                       color: Colors.black,
-                      fontSize: 14,
+                      fontSize: 16,
                       fontWeight: FontWeight.bold,
                     ),
                   ),
                   style: ElevatedButton.styleFrom(
                     padding: const EdgeInsets.symmetric(
-                      horizontal: 16,
-                      vertical: 8,
+                      horizontal: 28,
+                      vertical: 10,
                     ),
                     backgroundColor: Colors.yellow,
                     disabledBackgroundColor: Colors.grey[300],
@@ -159,9 +160,9 @@ class _PlayerSelectionPageState extends State<PlayerSelectionPage> {
                   padding: const EdgeInsets.all(16),
                   gridDelegate: const SliverGridDelegateWithFixedCrossAxisCount(
                     crossAxisCount: 7,
-                    crossAxisSpacing: 12,
-                    mainAxisSpacing: 12,
-                    childAspectRatio: 1.0,
+                    crossAxisSpacing: 16,
+                    mainAxisSpacing: 16,
+                    childAspectRatio: 0.65,
                   ),
                   itemCount: users.length,
                   itemBuilder: (context, index) {
@@ -177,27 +178,27 @@ class _PlayerSelectionPageState extends State<PlayerSelectionPage> {
                     return GestureDetector(
                       onTap: isExcluded ? null : () => _toggleSelection(userId),
                       child: Opacity(
-                        opacity: isExcluded ? 0.4 : 1.0,
-                        child: Container(
-                          decoration: BoxDecoration(
-                            color: isSelected
-                                ? Colors.yellow[200]
-                                : Colors.transparent,
-                            shape: BoxShape.circle,
-                            border: Border.all(
-                              color: isSelected
-                                  ? Colors.deepPurple
-                                  : isExcluded
-                                      ? Colors.grey[400]!
-                                      : Colors.deepPurple[200]!,
-                              width: isSelected ? 3 : 2,
-                            ),
-                          ),
-                          padding: const EdgeInsets.all(4),
-                          child: Stack(
-                            alignment: Alignment.center,
-                            children: [
-                              CircleAvatar(
+                        opacity: isExcluded ? 0.3 : 1.0,
+                        child: Stack(
+                          alignment: Alignment.bottomCenter,
+                          children: [
+                            Container(
+                              decoration: BoxDecoration(
+                                border: isSelected
+                                    ? Border.all(
+                                        color: Colors.deepPurple,
+                                        width: 3,
+                                      )
+                                    : isExcluded
+                                        ? Border.all(
+                                            color: Colors.grey,
+                                            width: 2,
+                                          )
+                                        : null,
+                                borderRadius: BorderRadius.circular(200),
+                              ),
+                              child: CircleAvatar(
+                                radius: 140,
                                 backgroundColor: Colors.deepPurple[100],
                                 backgroundImage:
                                     photoUrl != null && photoUrl.isNotEmpty
@@ -208,28 +209,80 @@ class _PlayerSelectionPageState extends State<PlayerSelectionPage> {
                                         : null,
                                 child: photoUrl == null || photoUrl.isEmpty
                                     ? const Icon(Icons.person,
-                                        size: 24, color: Colors.deepPurple)
+                                        size: 50, color: Colors.deepPurple)
                                     : null,
                               ),
-                              if (isSelected)
-                                Positioned(
-                                  bottom: 0,
-                                  right: 0,
-                                  child: Container(
-                                    decoration: const BoxDecoration(
-                                      color: Colors.green,
-                                      shape: BoxShape.circle,
-                                    ),
-                                    padding: const EdgeInsets.all(3),
-                                    child: const Icon(
-                                      Icons.check,
-                                      color: Colors.white,
-                                      size: 14,
-                                    ),
+                            ),
+                            if (isSelected)
+                              Positioned(
+                                top: 0,
+                                right: 0,
+                                child: Container(
+                                  decoration: BoxDecoration(
+                                    color: Colors.deepPurple,
+                                    borderRadius: BorderRadius.circular(50),
+                                  ),
+                                  padding: const EdgeInsets.all(6),
+                                  child: const Icon(
+                                    Icons.check,
+                                    color: Colors.white,
+                                    size: 24,
                                   ),
                                 ),
-                            ],
-                          ),
+                              ),
+                            if (isExcluded)
+                              Positioned(
+                                top: 0,
+                                right: 0,
+                                child: Container(
+                                  decoration: BoxDecoration(
+                                    color: Colors.red,
+                                    borderRadius: BorderRadius.circular(50),
+                                  ),
+                                  padding: const EdgeInsets.all(6),
+                                  child: const Icon(
+                                    Icons.block,
+                                    color: Colors.white,
+                                    size: 24,
+                                  ),
+                                ),
+                              ),
+                            Container(
+                              margin: const EdgeInsets.only(bottom: 8),
+                              padding: const EdgeInsets.symmetric(
+                                  horizontal: 12, vertical: 8),
+                              decoration: BoxDecoration(
+                                color: Colors.black87,
+                                borderRadius: BorderRadius.circular(12),
+                              ),
+                              child: Column(
+                                mainAxisSize: MainAxisSize.min,
+                                children: [
+                                  Text(
+                                    displayName,
+                                    style: const TextStyle(
+                                      fontSize: 14,
+                                      fontWeight: FontWeight.bold,
+                                      color: Colors.white,
+                                    ),
+                                    textAlign: TextAlign.center,
+                                    maxLines: 1,
+                                    overflow: TextOverflow.ellipsis,
+                                  ),
+                                  Text(
+                                    '@$username',
+                                    style: const TextStyle(
+                                      fontSize: 11,
+                                      color: Colors.grey,
+                                    ),
+                                    textAlign: TextAlign.center,
+                                    maxLines: 1,
+                                    overflow: TextOverflow.ellipsis,
+                                  ),
+                                ],
+                              ),
+                            ),
+                          ],
                         ),
                       ),
                     );

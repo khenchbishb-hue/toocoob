@@ -57,10 +57,10 @@ class KindsOfGamePage extends StatelessWidget {
       body: GridView.builder(
         padding: const EdgeInsets.all(8),
         gridDelegate: const SliverGridDelegateWithFixedCrossAxisCount(
-          crossAxisCount: 3,
+          crossAxisCount: 4,
           crossAxisSpacing: 8,
           mainAxisSpacing: 8,
-          childAspectRatio: 0.65,
+          childAspectRatio: 1,
         ),
         itemCount: games.length,
         itemBuilder: (context, index) {

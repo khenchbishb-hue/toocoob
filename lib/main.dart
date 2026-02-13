@@ -4,19 +4,12 @@ import 'dart:io' show Platform;
 import 'package:flutter/material.dart';
 import 'screens/user_home.dart';
 import 'screens/player_selection_page.dart';
-import 'screens/android/android_home_screen.dart';
-import 'screens/android/android_player_selection.dart';
 import 'package:cloud_firestore/cloud_firestore.dart';
 import 'package:firebase_core/firebase_core.dart';
 import 'package:flutter/foundation.dart' show kIsWeb;
 import 'utils/firebase_initializer.dart';
 import 'firebase_options.dart';
 import 'utils/local_debug_file.dart';
-
-// Platform detection helper
-bool _isAndroidApp() {
-  return !kIsWeb && Platform.isAndroid;
-}
 
 // Set to true when Firebase successfully initialized.
 bool firebaseInitialized = false;
@@ -189,9 +182,7 @@ class _LoginScreenState extends State<LoginScreen> {
       Navigator.push(
         context,
         MaterialPageRoute(
-          builder: (context) => _isAndroidApp()
-              ? const AndroidPlayerSelectionPage(isAdmin: true)
-              : const PlayerSelectionPage(isAdmin: true),
+          builder: (context) => const PlayerSelectionPage(isAdmin: true),
         ),
       );
     } else {
@@ -249,9 +240,7 @@ class _LoginScreenState extends State<LoginScreen> {
         Navigator.push(
           context,
           MaterialPageRoute(
-            builder: (context) => _isAndroidApp()
-                ? AndroidHomeScreen(userId: docId, username: username)
-                : UserHome(userId: docId, username: username),
+            builder: (context) => UserHome(userId: docId, username: username),
           ),
         );
       } catch (e) {
