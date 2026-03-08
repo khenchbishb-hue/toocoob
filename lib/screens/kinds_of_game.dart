@@ -1,7 +1,7 @@
 import 'package:flutter/material.dart';
 import 'dart:io' show Platform;
 import 'package:flutter/foundation.dart' show kIsWeb;
-import '13_card_poker.dart';
+import 'playing_table.dart';
 import 'ios/13_card_poker_ios.dart';
 import '5_card_texas.dart';
 import 'muushig.dart';
@@ -175,30 +175,59 @@ class KindsOfGamePage extends StatelessWidget {
     Widget? page;
     switch (index) {
       case 0:
+        if (selectedUserIds.length < 2) {
+          ScaffoldMessenger.of(context).showSnackBar(
+            const SnackBar(content: Text('Дор хаяж 2 тоглогч сонгоно уу')),
+          );
+          return;
+        }
         page = !kIsWeb && Platform.isIOS
             ? CardPokerPageIOS(selectedUserIds: selectedUserIds)
-            : CardPokerPage(selectedUserIds: selectedUserIds);
+            : PlayingTableScreen(
+                gameType: '13 МОДНЫ ПОКЕР',
+                selectedUserIds: selectedUserIds,
+              );
         break;
       case 1:
-        page = const CardTexasPage();
+        page = CardTexasPage(
+          selectedUserIds: List<String>.from(selectedUserIds),
+        );
         break;
       case 2:
-        page = const MuushigPage();
+        if (selectedUserIds.length < 2) {
+          ScaffoldMessenger.of(context).showSnackBar(
+            const SnackBar(content: Text('Дор хаяж 2 тоглогч сонгоно уу')),
+          );
+          return;
+        }
+        page = MuushigPage(selectedUserIds: List<String>.from(selectedUserIds));
         break;
       case 3:
-        page = const BuurPage();
+        page = BuurPage(selectedUserIds: List<String>.from(selectedUserIds));
         break;
       case 4:
-        page = const Game108Page();
+        if (selectedUserIds.length < 2) {
+          ScaffoldMessenger.of(context).showSnackBar(
+            const SnackBar(content: Text('Дор хаяж 2 тоглогч сонгоно уу')),
+          );
+          return;
+        }
+        page = Game108Page(selectedUserIds: List<String>.from(selectedUserIds));
         break;
       case 5:
-        page = const HodrokhPage();
+        page = HodrokhPage(
+          selectedUserIds: List<String>.from(selectedUserIds),
+        );
         break;
       case 6:
-        page = const NyxShaxaxPage();
+        page = NyxShaxaxPage(
+          selectedUserIds: List<String>.from(selectedUserIds),
+        );
         break;
       case 7:
-        page = const DurakPage();
+        page = DurakPage(
+          selectedUserIds: List<String>.from(selectedUserIds),
+        );
         break;
       case 8:
         page = const Game501Page();

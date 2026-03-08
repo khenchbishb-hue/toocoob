@@ -1,5 +1,4 @@
 import 'package:flutter/material.dart';
-import 'package:flutter/cupertino.dart';
 import 'package:cloud_firestore/cloud_firestore.dart';
 import 'package:firebase_core/firebase_core.dart';
 import '../admin_dashboard.dart';
@@ -45,7 +44,7 @@ class _PlayerSelectionPageIOSState extends State<PlayerSelectionPageIOS> {
     final screenWidth = MediaQuery.of(context).size.width;
     // iPhone: 2-3 columns based on screen size
     final crossAxisCount = screenWidth < 400 ? 2 : 3;
-    
+
     return Scaffold(
       appBar: AppBar(
         leading: IconButton(
@@ -57,7 +56,8 @@ class _PlayerSelectionPageIOSState extends State<PlayerSelectionPageIOS> {
         actions: [
           TextButton.icon(
             icon: const Icon(Icons.arrow_back, color: Colors.white, size: 18),
-            label: const Text('Буцах', style: TextStyle(color: Colors.white, fontSize: 14)),
+            label: const Text('Буцах',
+                style: TextStyle(color: Colors.white, fontSize: 14)),
             onPressed: () => Navigator.of(context).pop(),
           ),
           const SizedBox(width: 8),
@@ -84,7 +84,8 @@ class _PlayerSelectionPageIOSState extends State<PlayerSelectionPageIOS> {
               children: [
                 // Header section with selection count and button
                 Container(
-                  padding: const EdgeInsets.symmetric(vertical: 12, horizontal: 16),
+                  padding:
+                      const EdgeInsets.symmetric(vertical: 12, horizontal: 16),
                   decoration: BoxDecoration(
                     color: Theme.of(context).primaryColor.withOpacity(0.1),
                     border: Border(
@@ -108,20 +109,24 @@ class _PlayerSelectionPageIOSState extends State<PlayerSelectionPageIOS> {
                           onPressed: _selectedUsers.isNotEmpty
                               ? () {
                                   if (widget.isAddingMode) {
-                                    Navigator.pop(context, _selectedUsers.toList());
+                                    Navigator.pop(
+                                        context, _selectedUsers.toList());
                                   } else {
                                     Navigator.push(
                                       context,
                                       MaterialPageRoute(
-                                        builder: (context) => PlayingFormatPageIOS(
-                                          selectedUserIds: _selectedUsers.toList(),
+                                        builder: (context) =>
+                                            PlayingFormatPageIOS(
+                                          selectedUserIds:
+                                              _selectedUsers.toList(),
                                         ),
                                       ),
                                     );
                                   }
                                 }
                               : null,
-                          icon: const Icon(Icons.play_arrow, color: Colors.black),
+                          icon:
+                              const Icon(Icons.play_arrow, color: Colors.black),
                           label: const Text(
                             'Ширээнд урих',
                             style: TextStyle(
@@ -171,7 +176,8 @@ class _PlayerSelectionPageIOSState extends State<PlayerSelectionPageIOS> {
                               SizedBox(height: 16),
                               Text(
                                 'Хэрэглэгч олдсонгүй',
-                                style: TextStyle(fontSize: 18, color: Colors.grey),
+                                style:
+                                    TextStyle(fontSize: 18, color: Colors.grey),
                               ),
                             ],
                           ),
@@ -200,11 +206,14 @@ class _PlayerSelectionPageIOSState extends State<PlayerSelectionPageIOS> {
                           final photoUrl = data['photoUrl'];
                           final userId = user.id;
                           final isSelected = _selectedUsers.contains(userId);
-                          final isExcluded = widget.excludedUserIds.contains(userId);
+                          final isExcluded =
+                              widget.excludedUserIds.contains(userId);
 
                           return GestureDetector(
                             key: ValueKey(userId),
-                            onTap: isExcluded ? null : () => _toggleSelection(userId),
+                            onTap: isExcluded
+                                ? null
+                                : () => _toggleSelection(userId),
                             child: Opacity(
                               opacity: isExcluded ? 0.3 : 1.0,
                               child: Column(
@@ -232,17 +241,22 @@ class _PlayerSelectionPageIOSState extends State<PlayerSelectionPageIOS> {
                                             ),
                                             child: CircleAvatar(
                                               radius: 50,
-                                              backgroundColor: Colors.deepPurple[100],
-                                              backgroundImage:
-                                                  photoUrl != null && photoUrl.isNotEmpty
-                                                      ? (photoUrl.startsWith('http')
-                                                          ? NetworkImage(photoUrl)
-                                                          : AssetImage('assets/$photoUrl')
-                                                              as ImageProvider)
-                                                      : null,
-                                              child: photoUrl == null || photoUrl.isEmpty
+                                              backgroundColor:
+                                                  Colors.deepPurple[100],
+                                              backgroundImage: photoUrl !=
+                                                          null &&
+                                                      photoUrl.isNotEmpty
+                                                  ? (photoUrl.startsWith('http')
+                                                      ? NetworkImage(photoUrl)
+                                                      : AssetImage(
+                                                              'assets/$photoUrl')
+                                                          as ImageProvider)
+                                                  : null,
+                                              child: photoUrl == null ||
+                                                      photoUrl.isEmpty
                                                   ? const Icon(Icons.person,
-                                                      size: 35, color: Colors.deepPurple)
+                                                      size: 35,
+                                                      color: Colors.deepPurple)
                                                   : null,
                                             ),
                                           ),
@@ -252,7 +266,7 @@ class _PlayerSelectionPageIOSState extends State<PlayerSelectionPageIOS> {
                                             top: 0,
                                             right: 0,
                                             child: Container(
-                                              decoration: BoxDecoration(
+                                              decoration: const BoxDecoration(
                                                 color: Colors.deepPurple,
                                                 shape: BoxShape.circle,
                                               ),
@@ -269,7 +283,7 @@ class _PlayerSelectionPageIOSState extends State<PlayerSelectionPageIOS> {
                                             top: 0,
                                             right: 0,
                                             child: Container(
-                                              decoration: BoxDecoration(
+                                              decoration: const BoxDecoration(
                                                 color: Colors.red,
                                                 shape: BoxShape.circle,
                                               ),

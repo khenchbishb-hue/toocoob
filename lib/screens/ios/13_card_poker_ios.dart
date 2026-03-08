@@ -1,8 +1,6 @@
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
 import 'package:cloud_firestore/cloud_firestore.dart';
-import 'dart:io' show Platform;
-import 'package:flutter/foundation.dart' show kIsWeb;
 import '../player_selection_page.dart';
 
 class CardPokerPageIOS extends StatefulWidget {
@@ -188,7 +186,8 @@ class _CardPokerPageIOSState extends State<CardPokerPageIOS>
                           ),
                         ),
                         IconButton(
-                          icon: const Icon(Icons.close, color: Colors.white, size: 20),
+                          icon: const Icon(Icons.close,
+                              color: Colors.white, size: 20),
                           onPressed: () => Navigator.pop(context),
                         ),
                       ],
@@ -291,12 +290,14 @@ class _CardPokerPageIOSState extends State<CardPokerPageIOS>
                                                   photoUrl.isNotEmpty
                                               ? (photoUrl.startsWith('http')
                                                   ? NetworkImage(photoUrl)
-                                                  : AssetImage('assets/$photoUrl')
+                                                  : AssetImage(
+                                                          'assets/$photoUrl')
                                                       as ImageProvider)
                                               : null,
                                           child: photoUrl == null ||
                                                   photoUrl.isEmpty
-                                              ? const Icon(Icons.person, size: 25)
+                                              ? const Icon(Icons.person,
+                                                  size: 25)
                                               : null,
                                         ),
                                       ),
@@ -386,12 +387,16 @@ class _CardPokerPageIOSState extends State<CardPokerPageIOS>
                                       whereIn: newPlayerIds)
                                   .snapshots()
                                   .distinct((prev, next) {
-                                    if (prev.docs.length != next.docs.length) return false;
-                                    for (int i = 0; i < prev.docs.length; i++) {
-                                      if (prev.docs[i].id != next.docs[i].id) return false;
-                                    }
-                                    return true;
-                                  }),
+                                if (prev.docs.length != next.docs.length) {
+                                  return false;
+                                }
+                                for (int i = 0; i < prev.docs.length; i++) {
+                                  if (prev.docs[i].id != next.docs[i].id) {
+                                    return false;
+                                  }
+                                }
+                                return true;
+                              }),
                               builder: (context, snapshot) {
                                 if (!snapshot.hasData) {
                                   return const Center(
@@ -445,10 +450,13 @@ class _CardPokerPageIOSState extends State<CardPokerPageIOS>
                                                           Colors.grey[300],
                                                       backgroundImage: photoUrl !=
                                                                   null &&
-                                                              photoUrl.isNotEmpty
-                                                          ? (photoUrl.startsWith(
-                                                                  'http')
-                                                              ? NetworkImage(photoUrl)
+                                                              photoUrl
+                                                                  .isNotEmpty
+                                                          ? (photoUrl
+                                                                  .startsWith(
+                                                                      'http')
+                                                              ? NetworkImage(
+                                                                  photoUrl)
                                                               : AssetImage(
                                                                       'assets/$photoUrl')
                                                                   as ImageProvider)
@@ -457,9 +465,10 @@ class _CardPokerPageIOSState extends State<CardPokerPageIOS>
                                                               photoUrl.isEmpty
                                                           ? const Icon(
                                                               Icons.person,
-                                                            size: 28,)
-                                                        : null,
-                                                  ),
+                                                              size: 28,
+                                                            )
+                                                          : null,
+                                                    ),
                                                   ),
                                                   const SizedBox(height: 6),
                                                   Text(
@@ -631,12 +640,16 @@ class _CardPokerPageIOSState extends State<CardPokerPageIOS>
                                           : currentPlayerIds)
                                   .snapshots()
                                   .distinct((prev, next) {
-                                    if (prev.docs.length != next.docs.length) return false;
-                                    for (int i = 0; i < prev.docs.length; i++) {
-                                      if (prev.docs[i].id != next.docs[i].id) return false;
-                                    }
-                                    return true;
-                                  }),
+                                if (prev.docs.length != next.docs.length) {
+                                  return false;
+                                }
+                                for (int i = 0; i < prev.docs.length; i++) {
+                                  if (prev.docs[i].id != next.docs[i].id) {
+                                    return false;
+                                  }
+                                }
+                                return true;
+                              }),
                               builder: (context, snapshot) {
                                 if (!snapshot.hasData) {
                                   return const Padding(
@@ -659,12 +672,11 @@ class _CardPokerPageIOSState extends State<CardPokerPageIOS>
                                   spacing: 4,
                                   runSpacing: 4,
                                   children: orderedDocs.map((player) {
-                                    final data = player.data()
-                                        as Map<String, dynamic>;
-                                    final displayName =
-                                        data['displayName'] ??
-                                            data['username'] ??
-                                            'Хэрэглэгч';
+                                    final data =
+                                        player.data() as Map<String, dynamic>;
+                                    final displayName = data['displayName'] ??
+                                        data['username'] ??
+                                        'Хэрэглэгч';
                                     final photoUrl = data['photoUrl'];
                                     final orderIndex =
                                         selectedOrder.indexOf(player.id);
@@ -675,13 +687,10 @@ class _CardPokerPageIOSState extends State<CardPokerPageIOS>
                                         onTap: () {
                                           setStateModal(() {
                                             if (orderIndex != -1) {
-                                              selectedOrder
-                                                  .remove(player.id);
-                                            } else if (selectedOrder
-                                                    .length <
+                                              selectedOrder.remove(player.id);
+                                            } else if (selectedOrder.length <
                                                 currentPlayerIds.length) {
-                                              selectedOrder
-                                                  .add(player.id);
+                                              selectedOrder.add(player.id);
                                             }
                                           });
                                         },
@@ -693,22 +702,18 @@ class _CardPokerPageIOSState extends State<CardPokerPageIOS>
                                                 color: Colors.white
                                                     .withOpacity(0.15),
                                                 borderRadius:
-                                                    BorderRadius.circular(
-                                                        12),
+                                                    BorderRadius.circular(12),
                                                 border: Border.all(
                                                   color: orderIndex != -1
                                                       ? Colors.amber
-                                                      : Colors
-                                                          .transparent,
+                                                      : Colors.transparent,
                                                   width: 2,
                                                 ),
                                               ),
-                                              padding:
-                                                  const EdgeInsets.all(4),
+                                              padding: const EdgeInsets.all(4),
                                               child: Column(
                                                 mainAxisAlignment:
-                                                    MainAxisAlignment
-                                                        .center,
+                                                    MainAxisAlignment.center,
                                                 children: [
                                                   RepaintBoundary(
                                                     child: CircleAvatar(
@@ -722,37 +727,34 @@ class _CardPokerPageIOSState extends State<CardPokerPageIOS>
                                                           ? (photoUrl
                                                                   .startsWith(
                                                                       'http')
-                                                              ? NetworkImage(photoUrl)
-                                                            : AssetImage(
-                                                                    'assets/$photoUrl')
-                                                                as ImageProvider)
-                                                        : null,
-                                                    child: photoUrl ==
-                                                                null ||
-                                                            photoUrl
-                                                                .isEmpty
-                                                        ? const Icon(
-                                                            Icons.person,
-                                                            size: 16,)
-                                                        : null,
+                                                              ? NetworkImage(
+                                                                  photoUrl)
+                                                              : AssetImage(
+                                                                      'assets/$photoUrl')
+                                                                  as ImageProvider)
+                                                          : null,
+                                                      child: photoUrl == null ||
+                                                              photoUrl.isEmpty
+                                                          ? const Icon(
+                                                              Icons.person,
+                                                              size: 16,
+                                                            )
+                                                          : null,
+                                                    ),
                                                   ),
-                                                  ),
-                                                  const SizedBox(
-                                                      height: 3),
+                                                  const SizedBox(height: 3),
                                                   Text(
                                                     displayName,
-                                                    style:
-                                                        const TextStyle(
+                                                    style: const TextStyle(
                                                       fontSize: 9,
                                                       fontWeight:
                                                           FontWeight.bold,
                                                       color: Colors.white,
                                                     ),
                                                     maxLines: 1,
-                                                    overflow: TextOverflow
-                                                        .ellipsis,
-                                                    textAlign:
-                                                        TextAlign.center,
+                                                    overflow:
+                                                        TextOverflow.ellipsis,
+                                                    textAlign: TextAlign.center,
                                                   ),
                                                 ],
                                               ),
@@ -766,29 +768,22 @@ class _CardPokerPageIOSState extends State<CardPokerPageIOS>
                                                   child: Container(
                                                     width: 22,
                                                     height: 22,
-                                                    decoration:
-                                                        BoxDecoration(
+                                                    decoration: BoxDecoration(
                                                       color: Colors.amber,
-                                                      shape:
-                                                          BoxShape.circle,
+                                                      shape: BoxShape.circle,
                                                       border: Border.all(
-                                                        color:
-                                                            Colors.blue,
+                                                        color: Colors.blue,
                                                         width: 2,
                                                       ),
                                                     ),
-                                                    alignment:
-                                                        Alignment.center,
+                                                    alignment: Alignment.center,
                                                     child: Text(
                                                       '${orderIndex + 1}',
-                                                      style:
-                                                          const TextStyle(
+                                                      style: const TextStyle(
                                                         fontSize: 11,
                                                         fontWeight:
-                                                            FontWeight
-                                                                .bold,
-                                                        color:
-                                                            Colors.black,
+                                                            FontWeight.bold,
+                                                        color: Colors.black,
                                                       ),
                                                     ),
                                                   ),
@@ -822,7 +817,8 @@ class _CardPokerPageIOSState extends State<CardPokerPageIOS>
                             ),
                             child: const Text(
                               'Цэвэрлэх',
-                              style: TextStyle(color: Colors.white, fontSize: 12),
+                              style:
+                                  TextStyle(color: Colors.white, fontSize: 12),
                             ),
                           ),
                         ),
@@ -1391,12 +1387,12 @@ class _CardPokerPageIOSState extends State<CardPokerPageIOS>
                               whereIn: tiedIds.isEmpty ? [''] : tiedIds)
                           .snapshots()
                           .distinct((prev, next) {
-                            if (prev.docs.length != next.docs.length) return false;
-                            for (int i = 0; i < prev.docs.length; i++) {
-                              if (prev.docs[i].id != next.docs[i].id) return false;
-                            }
-                            return true;
-                          }),
+                        if (prev.docs.length != next.docs.length) return false;
+                        for (int i = 0; i < prev.docs.length; i++) {
+                          if (prev.docs[i].id != next.docs[i].id) return false;
+                        }
+                        return true;
+                      }),
                       builder: (context, snapshot) {
                         if (!snapshot.hasData) {
                           return const Padding(
@@ -1418,14 +1414,12 @@ class _CardPokerPageIOSState extends State<CardPokerPageIOS>
                           spacing: 4,
                           runSpacing: 4,
                           children: orderedDocs.map((player) {
-                            final data =
-                                player.data() as Map<String, dynamic>;
+                            final data = player.data() as Map<String, dynamic>;
                             final displayName = data['displayName'] ??
                                 data['username'] ??
                                 'Хэрэглэгч';
                             final photoUrl = data['photoUrl'];
-                            final orderIndex =
-                                selectedOrder.indexOf(player.id);
+                            final orderIndex = selectedOrder.indexOf(player.id);
 
                             return SizedBox(
                               width: 65,
@@ -1444,10 +1438,8 @@ class _CardPokerPageIOSState extends State<CardPokerPageIOS>
                                   children: [
                                     Container(
                                       decoration: BoxDecoration(
-                                        color: Colors.white
-                                            .withOpacity(0.15),
-                                        borderRadius:
-                                            BorderRadius.circular(12),
+                                        color: Colors.white.withOpacity(0.15),
+                                        borderRadius: BorderRadius.circular(12),
                                         border: Border.all(
                                           color: orderIndex != -1
                                               ? Colors.amber
@@ -1463,24 +1455,22 @@ class _CardPokerPageIOSState extends State<CardPokerPageIOS>
                                           RepaintBoundary(
                                             child: CircleAvatar(
                                               radius: 16,
-                                              backgroundColor:
-                                                  Colors.grey[300],
+                                              backgroundColor: Colors.grey[300],
                                               backgroundImage: photoUrl !=
                                                           null &&
                                                       photoUrl.isNotEmpty
-                                                  ? (photoUrl.startsWith(
-                                                          'http')
+                                                  ? (photoUrl.startsWith('http')
                                                       ? NetworkImage(photoUrl)
                                                       : AssetImage(
                                                               'assets/$photoUrl')
                                                           as ImageProvider)
                                                   : null,
-                                            child: photoUrl == null ||
-                                                    photoUrl.isEmpty
-                                                ? const Icon(Icons.person,
-                                                    size: 14)
-                                                : null,
-                                          ),
+                                              child: photoUrl == null ||
+                                                      photoUrl.isEmpty
+                                                  ? const Icon(Icons.person,
+                                                      size: 14)
+                                                  : null,
+                                            ),
                                           ),
                                           const SizedBox(height: 3),
                                           Text(
@@ -1491,8 +1481,7 @@ class _CardPokerPageIOSState extends State<CardPokerPageIOS>
                                               color: Colors.white,
                                             ),
                                             maxLines: 1,
-                                            overflow:
-                                                TextOverflow.ellipsis,
+                                            overflow: TextOverflow.ellipsis,
                                             textAlign: TextAlign.center,
                                           ),
                                         ],
@@ -1544,7 +1533,8 @@ class _CardPokerPageIOSState extends State<CardPokerPageIOS>
                             ),
                             child: const Text(
                               'Цэвэрлэх',
-                              style: TextStyle(color: Colors.white, fontSize: 12),
+                              style:
+                                  TextStyle(color: Colors.white, fontSize: 12),
                             ),
                           ),
                         ),
@@ -2079,7 +2069,9 @@ class _CardPokerPageIOSState extends State<CardPokerPageIOS>
               children: [
                 Text(
                   _isBooltMode ? 'Боолтын №:' : 'Тоглолтын №:',
-                  style: TextStyle(fontSize: screenWidth < 380 ? 11 : 13, color: Colors.white),
+                  style: TextStyle(
+                      fontSize: screenWidth < 380 ? 11 : 13,
+                      color: Colors.white),
                 ),
                 const SizedBox(width: 6),
                 Text(
@@ -2106,7 +2098,8 @@ class _CardPokerPageIOSState extends State<CardPokerPageIOS>
           ),
           TextButton.icon(
             icon: const Icon(Icons.arrow_back, color: Colors.white, size: 18),
-            label: const Text('Буцах', style: TextStyle(color: Colors.white, fontSize: 14)),
+            label: const Text('Буцах',
+                style: TextStyle(color: Colors.white, fontSize: 14)),
             onPressed: () => Navigator.of(context).pop(),
           ),
           const SizedBox(width: 4),
@@ -2120,20 +2113,20 @@ class _CardPokerPageIOSState extends State<CardPokerPageIOS>
                   whereIn: currentPlayerIds.isEmpty ? [''] : currentPlayerIds)
               .snapshots()
               .distinct((prev, next) {
-                // Only rebuild if document IDs or data actually changed
-                if (prev.docs.length != next.docs.length) return false;
-                for (int i = 0; i < prev.docs.length; i++) {
-                  if (prev.docs[i].id != next.docs[i].id) return false;
-                  final prevData = prev.docs[i].data() as Map<String, dynamic>;
-                  final nextData = next.docs[i].data() as Map<String, dynamic>;
-                  if (prevData['displayName'] != nextData['displayName'] ||
-                      prevData['username'] != nextData['username'] ||
-                      prevData['photoUrl'] != nextData['photoUrl']) {
-                    return false;
-                  }
-                }
-                return true; // Data is the same, skip rebuild
-              }),
+            // Only rebuild if document IDs or data actually changed
+            if (prev.docs.length != next.docs.length) return false;
+            for (int i = 0; i < prev.docs.length; i++) {
+              if (prev.docs[i].id != next.docs[i].id) return false;
+              final prevData = prev.docs[i].data();
+              final nextData = next.docs[i].data();
+              if (prevData['displayName'] != nextData['displayName'] ||
+                  prevData['username'] != nextData['username'] ||
+                  prevData['photoUrl'] != nextData['photoUrl']) {
+                return false;
+              }
+            }
+            return true; // Data is the same, skip rebuild
+          }),
           builder: (context, snapshot) {
             if (snapshot.hasError) {
               return Center(
@@ -2209,35 +2202,36 @@ class _CardPokerPageIOSState extends State<CardPokerPageIOS>
                               color: _failedPlayerIds.contains(player.id)
                                   ? Colors.red
                                   : Colors.green.shade400,
-                              width: _failedPlayerIds.contains(player.id) ? 3 : 2,
+                              width:
+                                  _failedPlayerIds.contains(player.id) ? 3 : 2,
                             ),
                           ),
                           child: PlayerScoreCardIOS(
-                          playerIndex: actualIndex,
-                          totalPlayers: players.length,
-                          displayName: displayName,
-                          photoUrl: photoUrl,
-                          score: playerScores[actualIndex] ?? '',
-                          totalScore: _totalScores[player.id] ?? 0,
-                          autoFocus: actualIndex == effectiveActiveIndex &&
-                              !_failedPlayerIds.contains(player.id),
-                          isFailed: _failedPlayerIds.contains(player.id),
-                          winAmount: _winAmounts[player.id] ?? 0,
-                          lossAmount: _lossAmounts[player.id] ?? 0,
-                          winStars: _winStars[player.id] ?? 0,
-                          onScoreChanged: (score) {
-                            setState(() {
-                              playerScores[actualIndex] = score;
-                            });
-                          },
-                          onSubmit: () => _handleScoreSubmit(
-                            actualIndex,
-                            scoreOrderIndices,
-                            players,
+                            playerIndex: actualIndex,
+                            totalPlayers: players.length,
+                            displayName: displayName,
+                            photoUrl: photoUrl,
+                            score: playerScores[actualIndex] ?? '',
+                            totalScore: _totalScores[player.id] ?? 0,
+                            autoFocus: actualIndex == effectiveActiveIndex &&
+                                !_failedPlayerIds.contains(player.id),
+                            isFailed: _failedPlayerIds.contains(player.id),
+                            winAmount: _winAmounts[player.id] ?? 0,
+                            lossAmount: _lossAmounts[player.id] ?? 0,
+                            winStars: _winStars[player.id] ?? 0,
+                            onScoreChanged: (score) {
+                              setState(() {
+                                playerScores[actualIndex] = score;
+                              });
+                            },
+                            onSubmit: () => _handleScoreSubmit(
+                              actualIndex,
+                              scoreOrderIndices,
+                              players,
+                            ),
+                            onPrevious: _previousPlayer,
                           ),
-                          onPrevious: _previousPlayer,
                         ),
-                      ),
                       ),
                     );
                   },
@@ -2262,7 +2256,7 @@ class _CardPokerPageIOSState extends State<CardPokerPageIOS>
                       addAutomaticKeepAlives: true,
                       addRepaintBoundaries: true,
                       gridDelegate:
-                          SliverGridDelegateWithFixedCrossAxisCount(
+                          const SliverGridDelegateWithFixedCrossAxisCount(
                         crossAxisCount: 2,
                         crossAxisSpacing: 8,
                         mainAxisSpacing: 8,
@@ -2343,7 +2337,8 @@ class _CardPokerPageIOSState extends State<CardPokerPageIOS>
                     LayoutBuilder(
                       builder: (context, constraints) {
                         const spacing = 8.0;
-                        final blockSize = (constraints.maxWidth - spacing * 2) / 3;
+                        final blockSize =
+                            (constraints.maxWidth - spacing * 2) / 3;
                         final benchPlayers =
                             smallPlayers.take(3).toList().asMap().entries;
 
@@ -2351,7 +2346,7 @@ class _CardPokerPageIOSState extends State<CardPokerPageIOS>
                           shrinkWrap: true,
                           physics: const NeverScrollableScrollPhysics(),
                           gridDelegate:
-                              SliverGridDelegateWithFixedCrossAxisCount(
+                              const SliverGridDelegateWithFixedCrossAxisCount(
                             crossAxisCount: 3,
                             mainAxisSpacing: spacing,
                             crossAxisSpacing: spacing,
@@ -2359,8 +2354,7 @@ class _CardPokerPageIOSState extends State<CardPokerPageIOS>
                           ),
                           itemCount: benchPlayers.length,
                           itemBuilder: (context, index) {
-                            final entry =
-                                benchPlayers.elementAt(index);
+                            final entry = benchPlayers.elementAt(index);
                             final player = entry.value;
                             final data = player.data() as Map<String, dynamic>;
                             final displayName = data['displayName'] ??
@@ -2462,8 +2456,7 @@ class _CardPokerPageIOSState extends State<CardPokerPageIOS>
                                               'x $stars',
                                               style: const TextStyle(
                                                 fontSize: 11,
-                                                fontWeight:
-                                                    FontWeight.bold,
+                                                fontWeight: FontWeight.bold,
                                                 color: Colors.white,
                                               ),
                                             ),
@@ -2568,7 +2561,7 @@ class PlayerScoreCardIOS extends StatefulWidget {
   State<PlayerScoreCardIOS> createState() => _PlayerScoreCardIOSState();
 }
 
-class _PlayerScoreCardIOSState extends State<PlayerScoreCardIOS> 
+class _PlayerScoreCardIOSState extends State<PlayerScoreCardIOS>
     with AutomaticKeepAliveClientMixin {
   late TextEditingController _scoreController;
   late FocusNode _focusNode;
@@ -2644,8 +2637,9 @@ class _PlayerScoreCardIOSState extends State<PlayerScoreCardIOS>
       builder: (BuildContext context) {
         return AlertDialog(
           title: const Text('Буруу утга', style: TextStyle(fontSize: 16)),
-          content:
-              Text('Оноо 1-13 хүртэл байх ёстой. Та $score оруулсан байна.', style: const TextStyle(fontSize: 14)),
+          content: Text(
+              'Оноо 1-13 хүртэл байх ёстой. Та $score оруулсан байна.',
+              style: const TextStyle(fontSize: 14)),
           actions: [
             TextButton(
               onPressed: () {

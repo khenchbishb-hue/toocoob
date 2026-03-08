@@ -1,3 +1,4 @@
+// --- BEGIN ORIGINAL CONTENT ---
 // Clean, valid 13_card_poker.dart
 
 enum GameMode { round, multi, single }
@@ -47,7 +48,7 @@ class ThirteenCardPokerGame {
   }) {
     _setupInitialSeating();
   }
-  // --- Formerly global methods, now as class methods ---
+
   void addPlayerMidGame(Player player) {
     allPlayers.add(player);
     _setupInitialSeating();
@@ -245,3 +246,5 @@ class ThirteenCardPokerGame {
     return results;
   }
 }
+
+// --- END ORIGINAL CONTENT ---

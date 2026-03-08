@@ -1,7 +1,6 @@
 import 'package:cloud_firestore/cloud_firestore.dart';
 import 'package:firebase_core/firebase_core.dart';
 import 'package:flutter/material.dart';
-import 'package:flutter/cupertino.dart';
 
 class UserHomeIOS extends StatelessWidget {
   const UserHomeIOS({super.key, required this.userId, required this.username});
@@ -21,7 +20,8 @@ class UserHomeIOS extends StatelessWidget {
         actions: [
           TextButton.icon(
             icon: const Icon(Icons.arrow_back, color: Colors.white, size: 18),
-            label: const Text('Буцах', style: TextStyle(color: Colors.white, fontSize: 14)),
+            label: const Text('Буцах',
+                style: TextStyle(color: Colors.white, fontSize: 14)),
             onPressed: () => Navigator.of(context).pop(),
           ),
           const SizedBox(width: 8),
@@ -46,8 +46,10 @@ class UserHomeIOS extends StatelessWidget {
                         if (snapshot.hasError) {
                           return Text('Алдаа: ${snapshot.error}');
                         }
-                        if (snapshot.connectionState == ConnectionState.waiting) {
-                          return const Center(child: CircularProgressIndicator());
+                        if (snapshot.connectionState ==
+                            ConnectionState.waiting) {
+                          return const Center(
+                              child: CircularProgressIndicator());
                         }
                         if (!snapshot.hasData || !snapshot.data!.exists) {
                           return const Center(
@@ -70,13 +72,16 @@ class UserHomeIOS extends StatelessWidget {
                             CircleAvatar(
                               radius: 80,
                               backgroundColor: Colors.deepPurple[100],
-                              backgroundImage: photoUrl != null && photoUrl.isNotEmpty
-                                  ? (photoUrl.startsWith('http')
-                                      ? NetworkImage(photoUrl)
-                                      : AssetImage('assets/$photoUrl') as ImageProvider)
-                                  : null,
+                              backgroundImage:
+                                  photoUrl != null && photoUrl.isNotEmpty
+                                      ? (photoUrl.startsWith('http')
+                                          ? NetworkImage(photoUrl)
+                                          : AssetImage('assets/$photoUrl')
+                                              as ImageProvider)
+                                      : null,
                               child: photoUrl == null || photoUrl.isEmpty
-                                  ? const Icon(Icons.person, size: 60, color: Colors.deepPurple)
+                                  ? const Icon(Icons.person,
+                                      size: 60, color: Colors.deepPurple)
                                   : null,
                             ),
                             const SizedBox(height: 20),

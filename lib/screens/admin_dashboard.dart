@@ -1,10 +1,7 @@
 import 'dart:async';
-import 'dart:typed_data';
 
 import 'package:flutter/material.dart';
-import 'package:image_picker/image_picker.dart';
 import 'package:cloud_firestore/cloud_firestore.dart';
-import 'package:firebase_storage/firebase_storage.dart';
 import '../utils/firebase_initializer.dart';
 import 'package:firebase_core/firebase_core.dart';
 import '../utils/local_debug_file.dart';
@@ -22,12 +19,31 @@ class _AdminDashboardState extends State<AdminDashboard> {
   final _phoneController = TextEditingController();
 
   final _bankController = TextEditingController();
+  final _photoUrlController = TextEditingController();
 
   String? _generatedPassword;
-  Uint8List? _selectedImageBytes;
   bool _isLoading = false;
 
-  final ImagePicker _picker = ImagePicker();
+  String _normalizePhotoUrl(String input) {
+    final trimmed = input.trim();
+    if (trimmed.isEmpty) return '';
+
+    final uri = Uri.tryParse(trimmed);
+    if (uri == null) return trimmed;
+
+    if (uri.host == 'github.com') {
+      final segments = uri.pathSegments;
+      if (segments.length >= 5 && segments[2] == 'blob') {
+        final owner = segments[0];
+        final repo = segments[1];
+        final branch = segments[3];
+        final filePath = segments.sublist(4).join('/');
+        return 'https://raw.githubusercontent.com/$owner/$repo/$branch/$filePath';
+      }
+    }
+
+    return trimmed;
+  }
 
   bool _validateForm() {
     final username = _usernameController.text.trim();
@@ -35,6 +51,15 @@ class _AdminDashboardState extends State<AdminDashboard> {
     if (username.isEmpty) {
       ScaffoldMessenger.of(context).showSnackBar(
           const SnackBar(content: Text('Нэвтрэх нэр заавал бөглөнө үү')));
+      return false;
+    }
+
+    final photoUrl = _normalizePhotoUrl(_photoUrlController.text);
+    if (photoUrl.isNotEmpty &&
+        !photoUrl.startsWith('http://') &&
+        !photoUrl.startsWith('https://')) {
+      ScaffoldMessenger.of(context).showSnackBar(
+          const SnackBar(content: Text('Зургийн URL зөв холбоос байх ёстой')));
       return false;
     }
     return true;
@@ -60,6 +85,7 @@ class _AdminDashboardState extends State<AdminDashboard> {
     try {
       final phoneToSave =
           _phoneController.text.trim().replaceAll(RegExp(r'[\s\-\(\)]'), '');
+      final photoUrl = _normalizePhotoUrl(_photoUrlController.text);
 
       final username = _usernameController.text.trim();
 
@@ -74,14 +100,12 @@ class _AdminDashboardState extends State<AdminDashboard> {
         'bank': _bankController.text.trim().isEmpty
             ? null
             : _bankController.text.trim(),
+        'photoUrl': photoUrl.isEmpty ? null : photoUrl,
         'password': _generatedPassword ?? '',
         'createdAt': Timestamp.now(),
       };
 
       print('[ADMIN] Document to save: $doc');
-
-      // Save quickly without blocking UI; handle completion in background.
-      final imageBytes = _selectedImageBytes;
 
       if (mounted) {
         ScaffoldMessenger.of(context).showSnackBar(
@@ -112,13 +136,7 @@ class _AdminDashboardState extends State<AdminDashboard> {
           _displayNameController.clear();
           _phoneController.clear();
           _bankController.clear();
-          setState(() {
-            _selectedImageBytes = null;
-          });
-        }
-
-        if (imageBytes != null) {
-          unawaited(_uploadPhotoAndUpdate(docRef.id, username, imageBytes));
+          _photoUrlController.clear();
         }
       }).catchError((e) async {
         print('[ADMIN] Error adding user: $e');
@@ -149,50 +167,6 @@ class _AdminDashboardState extends State<AdminDashboard> {
     }
   }
 
-  Future<void> _uploadPhotoAndUpdate(
-    String docId,
-    String username,
-    Uint8List imageBytes,
-  ) async {
-    try {
-      final storageRef = FirebaseStorage.instance
-          .ref()
-          .child('users')
-          .child(username)
-          .child('${DateTime.now().millisecondsSinceEpoch}.jpg');
-
-      final uploadTask = await storageRef.putData(
-        imageBytes,
-        SettableMetadata(contentType: 'image/jpeg'),
-      );
-
-      if (uploadTask.state == TaskState.success) {
-        final photoUrl = await storageRef.getDownloadURL();
-        await FirebaseFirestore.instance
-            .collection('users')
-            .doc(docId)
-            .update({'photoUrl': photoUrl});
-      }
-    } catch (_) {
-      // Ignore photo upload errors to keep user creation fast.
-    }
-  }
-
-  Future<void> _pickImage() async {
-    final pickedFile = await _picker.pickImage(
-      source: ImageSource.gallery,
-      imageQuality: 70,
-      maxWidth: 1024,
-      maxHeight: 1024,
-    );
-    if (pickedFile != null) {
-      final bytes = await pickedFile.readAsBytes();
-      setState(() {
-        _selectedImageBytes = bytes;
-      });
-    }
-  }
-
   String _generatePassword(int length) {
     const chars =
         'abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789';
@@ -210,9 +184,10 @@ class _AdminDashboardState extends State<AdminDashboard> {
     final phoneCtrl = TextEditingController(text: userData['phone']);
     final bankCtrl = TextEditingController(text: userData['bank']);
     final passwordCtrl = TextEditingController(text: userData['password']);
+    final photoUrlCtrl =
+        TextEditingController(text: (userData['photoUrl'] ?? '').toString());
 
-    Uint8List? newImageBytes;
-    String? currentPhotoUrl = userData['photoUrl'];
+    String currentPhotoUrl = (userData['photoUrl'] ?? '').toString();
 
     final result = await showDialog<bool>(
       context: context,
@@ -223,66 +198,29 @@ class _AdminDashboardState extends State<AdminDashboard> {
             child: Column(
               mainAxisSize: MainAxisSize.min,
               children: [
-                // Зураг харуулах хэсэг
-                GestureDetector(
-                  onTap: () async {
-                    final pickedFile = await _picker.pickImage(
-                      source: ImageSource.gallery,
-                      imageQuality: 70,
-                      maxWidth: 1024,
-                      maxHeight: 1024,
-                    );
-                    if (pickedFile != null) {
-                      final bytes = await pickedFile.readAsBytes();
-                      print(
-                          '[ADMIN] Image picked, size: ${bytes.length} bytes');
-                      setDialogState(() {
-                        newImageBytes = bytes;
-                      });
-                      print('[ADMIN] newImageBytes set in dialog state');
-                    } else {
-                      print('[ADMIN] No image picked');
-                    }
-                  },
-                  child: Stack(
-                    alignment: Alignment.center,
-                    children: [
-                      CircleAvatar(
-                        radius: 50,
-                        backgroundColor: Colors.deepPurple[100],
-                        backgroundImage: newImageBytes != null
-                            ? MemoryImage(newImageBytes!)
-                            : (currentPhotoUrl != null
-                                ? NetworkImage(currentPhotoUrl)
-                                : null) as ImageProvider?,
-                        child: newImageBytes == null && currentPhotoUrl == null
-                            ? const Icon(Icons.person,
-                                size: 50, color: Colors.deepPurple)
-                            : null,
-                      ),
-                      Positioned(
-                        bottom: 0,
-                        right: 0,
-                        child: Container(
-                          padding: const EdgeInsets.all(4),
-                          decoration: const BoxDecoration(
-                            color: Colors.blue,
-                            shape: BoxShape.circle,
-                          ),
-                          child: const Icon(
-                            Icons.camera_alt,
-                            color: Colors.white,
-                            size: 20,
-                          ),
-                        ),
-                      ),
-                    ],
-                  ),
+                CircleAvatar(
+                  radius: 50,
+                  backgroundColor: Colors.deepPurple[100],
+                  backgroundImage: currentPhotoUrl.isNotEmpty
+                      ? NetworkImage(currentPhotoUrl)
+                      : null,
+                  child: currentPhotoUrl.isEmpty
+                      ? const Icon(Icons.person,
+                          size: 50, color: Colors.deepPurple)
+                      : null,
                 ),
                 const SizedBox(height: 8),
-                const Text(
-                  'Зураг солихын тулд дарна уу',
-                  style: TextStyle(fontSize: 12, color: Colors.grey),
+                TextField(
+                  controller: photoUrlCtrl,
+                  decoration: const InputDecoration(
+                    labelText: 'Зургийн URL',
+                    hintText: 'https://github.com/.../blob/.../avatar.jpg',
+                  ),
+                  onChanged: (value) {
+                    setDialogState(() {
+                      currentPhotoUrl = _normalizePhotoUrl(value);
+                    });
+                  },
                 ),
                 const SizedBox(height: 16),
                 TextField(
@@ -339,6 +277,9 @@ class _AdminDashboardState extends State<AdminDashboard> {
           'phone': phoneCtrl.text.trim(),
           'bank': bankCtrl.text.trim(),
           'password': passwordCtrl.text.trim(),
+          'photoUrl': _normalizePhotoUrl(photoUrlCtrl.text).isEmpty
+              ? null
+              : _normalizePhotoUrl(photoUrlCtrl.text),
         };
 
         print('[ADMIN] Updating user data: $updateData');
@@ -349,54 +290,6 @@ class _AdminDashboardState extends State<AdminDashboard> {
             .update(updateData);
 
         print('[ADMIN] User data updated successfully');
-
-        // Зураг солигдсон бол Firebase Storage-д хадгалах
-        if (newImageBytes != null && newImageBytes!.isNotEmpty) {
-          try {
-            print('[ADMIN] Uploading new photo...');
-            final username = usernameCtrl.text.trim();
-            final timestamp = DateTime.now().millisecondsSinceEpoch;
-            final fileName = 'photo_$timestamp.jpg';
-
-            print('[ADMIN] Storage path: users/$username/$fileName');
-
-            final storageRef = FirebaseStorage.instance
-                .ref()
-                .child('users')
-                .child(username)
-                .child(fileName);
-
-            print('[ADMIN] Starting upload...');
-
-            await storageRef.putData(
-              newImageBytes!,
-              SettableMetadata(contentType: 'image/jpeg'),
-            );
-
-            print('[ADMIN] Upload completed, getting download URL...');
-
-            final photoUrl = await storageRef.getDownloadURL();
-            print('[ADMIN] Photo URL: $photoUrl');
-
-            print('[ADMIN] Updating Firestore with photoUrl...');
-
-            await FirebaseFirestore.instance
-                .collection('users')
-                .doc(docId)
-                .update({'photoUrl': photoUrl});
-
-            print('[ADMIN] Photo URL updated in Firestore successfully');
-          } catch (photoError) {
-            print('[ADMIN] Photo upload error: $photoError');
-            if (mounted) {
-              ScaffoldMessenger.of(context).showSnackBar(
-                SnackBar(content: Text('Зураг хадгалах алдаа: $photoError')),
-              );
-            }
-          }
-        } else {
-          print('[ADMIN] No new image to upload');
-        }
 
         if (mounted) {
           ScaffoldMessenger.of(context).showSnackBar(
@@ -419,6 +312,7 @@ class _AdminDashboardState extends State<AdminDashboard> {
     phoneCtrl.dispose();
     bankCtrl.dispose();
     passwordCtrl.dispose();
+    photoUrlCtrl.dispose();
   }
 
   Future<void> _deleteUser(String docId, String username) async {
@@ -512,17 +406,26 @@ class _AdminDashboardState extends State<AdminDashboard> {
                 ),
               ),
 
-            // Зураг сонгох хэсэг
-            GestureDetector(
-              onTap: _pickImage,
-              child: CircleAvatar(
-                radius: 50,
-                backgroundImage: _selectedImageBytes != null
-                    ? MemoryImage(_selectedImageBytes!)
-                    : null,
-                child: _selectedImageBytes == null
-                    ? const Icon(Icons.camera_alt, size: 40)
-                    : null,
+            CircleAvatar(
+              radius: 50,
+              backgroundColor: Colors.deepPurple[100],
+              backgroundImage: _photoUrlController.text.trim().isNotEmpty
+                  ? NetworkImage(_photoUrlController.text.trim())
+                  : null,
+              child: _photoUrlController.text.trim().isEmpty
+                  ? const Icon(Icons.person, size: 40)
+                  : null,
+            ),
+            const SizedBox(height: 16),
+
+            TextField(
+              controller: _photoUrlController,
+              onChanged: (_) => setState(() {}),
+              decoration: const InputDecoration(
+                labelText: 'Зургийн URL',
+                border: OutlineInputBorder(),
+                helperText:
+                    'GitHub blob/raw URL оруулж болно (автоматаар raw болгож хадгална)',
               ),
             ),
             const SizedBox(height: 16),
@@ -661,7 +564,8 @@ class _AdminDashboardState extends State<AdminDashboard> {
                       final displayName = data['displayName'] ?? '';
                       final phone = data['phone'] ?? '';
                       final bank = data['bank'] ?? '';
-                      final photoUrl = data['photoUrl'];
+                      final photoUrl = (data['photoUrl'] ?? '').toString();
+                      final hasPhoto = photoUrl.isNotEmpty;
                       final password = data['password'] ?? '';
 
                       return Card(
@@ -673,12 +577,10 @@ class _AdminDashboardState extends State<AdminDashboard> {
                               // Зураг
                               CircleAvatar(
                                 radius: 30,
-                                backgroundImage: photoUrl != null
-                                    ? NetworkImage(photoUrl)
-                                    : null,
-                                child: photoUrl == null
-                                    ? const Icon(Icons.person)
-                                    : null,
+                                backgroundImage:
+                                    hasPhoto ? NetworkImage(photoUrl) : null,
+                                child:
+                                    !hasPhoto ? const Icon(Icons.person) : null,
                               ),
                               const SizedBox(width: 10),
                               // Текст

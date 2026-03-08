@@ -22,17 +22,36 @@ class PlayerSelectionPage extends StatefulWidget {
 
 class _PlayerSelectionPageState extends State<PlayerSelectionPage> {
   final Set<String> _selectedUsers = {};
+  late final Stream<QuerySnapshot> _usersStream;
+  final ScrollController _usersGridScrollController = ScrollController();
+
+  @override
+  void initState() {
+    super.initState();
+    // Keep a stable stream instance so selection rebuilds don't recreate it
+    // and reset the grid scroll position.
+    _usersStream = FirebaseFirestore.instance
+        .collection('users')
+        .orderBy('createdAt', descending: true)
+        .snapshots();
+  }
+
+  @override
+  void dispose() {
+    _usersGridScrollController.dispose();
+    super.dispose();
+  }
 
   void _toggleSelection(String userId) {
     setState(() {
       if (_selectedUsers.contains(userId)) {
         _selectedUsers.remove(userId);
       } else {
-        if (_selectedUsers.length < 7) {
+        if (_selectedUsers.length < 14) {
           _selectedUsers.add(userId);
         } else {
           ScaffoldMessenger.of(context).showSnackBar(
-            const SnackBar(content: Text('Максимум 7 хэрэглэгч сонгож болно')),
+            const SnackBar(content: Text('Максимум 14 хэрэглэгч сонгож болно')),
           );
         }
       }
@@ -76,7 +95,9 @@ class _PlayerSelectionPageState extends State<PlayerSelectionPage> {
                 ),
                 const SizedBox(height: 10),
                 ElevatedButton.icon(
-                  onPressed: _selectedUsers.isNotEmpty
+                  onPressed: (widget.isAddingMode
+                          ? _selectedUsers.isNotEmpty
+                          : _selectedUsers.length >= 2)
                       ? () {
                           if (widget.isAddingMode) {
                             // Нэмэх горимд - буцаад өгөх
@@ -122,10 +143,7 @@ class _PlayerSelectionPageState extends State<PlayerSelectionPage> {
               child: Text('Firebase эхлүүлэгдээгүй байна.'),
             )
           : StreamBuilder<QuerySnapshot>(
-              stream: FirebaseFirestore.instance
-                  .collection('users')
-                  .orderBy('createdAt', descending: true)
-                  .snapshots(),
+              stream: _usersStream,
               builder: (context, snapshot) {
                 if (snapshot.hasError) {
                   return Center(
@@ -157,6 +175,8 @@ class _PlayerSelectionPageState extends State<PlayerSelectionPage> {
                 final users = snapshot.data!.docs;
 
                 return GridView.builder(
+                  key: const PageStorageKey<String>('player_selection_grid'),
+                  controller: _usersGridScrollController,
                   padding: const EdgeInsets.all(16),
                   gridDelegate: const SliverGridDelegateWithFixedCrossAxisCount(
                     crossAxisCount: 7,

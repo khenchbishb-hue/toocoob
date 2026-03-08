@@ -11,7 +11,6 @@ class AndroidPlayerSelectionPage extends StatefulWidget {
     this.excludedUserIds = const [],
     this.isAddingMode = false,
   });
-
   final bool isAdmin;
   final List<String> excludedUserIds;
   final bool isAddingMode;
@@ -25,11 +24,21 @@ class _AndroidPlayerSelectionPageState
     extends State<AndroidPlayerSelectionPage> {
   final Set<String> _selectedUsers = {};
   final TextEditingController _searchController = TextEditingController();
+  late final Stream<QuerySnapshot> _usersStream;
+  final ScrollController _usersGridScrollController = ScrollController();
   String _searchQuery = '';
+
+  @override
+  void initState() {
+    super.initState();
+    // Keep stream stable across setState calls to preserve scroll position.
+    _usersStream = FirebaseFirestore.instance.collection('users').snapshots();
+  }
 
   @override
   void dispose() {
     _searchController.dispose();
+    _usersGridScrollController.dispose();
     super.dispose();
   }
 
@@ -150,9 +159,7 @@ class _AndroidPlayerSelectionPageState
                     child: Text('Firebase эхлүүлэгдээгүй байна.'),
                   )
                 : StreamBuilder<QuerySnapshot>(
-                    stream: FirebaseFirestore.instance
-                        .collection('users')
-                        .snapshots(),
+                    stream: _usersStream,
                     builder: (context, snapshot) {
                       if (snapshot.hasError) {
                         return Center(
@@ -195,14 +202,24 @@ class _AndroidPlayerSelectionPageState
                         );
                       }
 
+                      // MediaQuery ашиглан orientation найдвартай шалгах
+                      final mediaQuery = MediaQuery.of(context);
+                      final isPortrait =
+                          mediaQuery.orientation == Orientation.portrait;
+                      final crossAxisCount = isPortrait ? 2 : 7;
+                      final crossAxisSpacing = isPortrait ? 20.0 : 12.0;
+                      final mainAxisSpacing = isPortrait ? 20.0 : 12.0;
+                      final childAspectRatio = isPortrait ? 0.65 : 1.0;
                       return GridView.builder(
-                        padding: const EdgeInsets.all(12),
-                        gridDelegate:
-                            const SliverGridDelegateWithFixedCrossAxisCount(
-                          crossAxisCount: 4,
-                          crossAxisSpacing: 12,
-                          mainAxisSpacing: 12,
-                          childAspectRatio: 1.0,
+                        key: const PageStorageKey<String>(
+                            'android_player_selection_grid'),
+                        controller: _usersGridScrollController,
+                        padding: const EdgeInsets.all(16),
+                        gridDelegate: SliverGridDelegateWithFixedCrossAxisCount(
+                          crossAxisCount: crossAxisCount,
+                          crossAxisSpacing: crossAxisSpacing,
+                          mainAxisSpacing: mainAxisSpacing,
+                          childAspectRatio: childAspectRatio,
                         ),
                         itemCount: filteredUsers.length,
                         itemBuilder: (context, index) {
@@ -214,7 +231,6 @@ class _AndroidPlayerSelectionPageState
                           final isSelected = _selectedUsers.contains(userId);
                           final isExcluded =
                               widget.excludedUserIds.contains(userId);
-
                           final username = data['username'] ?? '';
                           return Column(
                             mainAxisAlignment: MainAxisAlignment.start,
@@ -240,11 +256,12 @@ class _AndroidPlayerSelectionPageState
                                         width: isSelected ? 3 : 2,
                                       ),
                                     ),
-                                    padding: const EdgeInsets.all(4),
+                                    padding: const EdgeInsets.all(8),
                                     child: Stack(
                                       alignment: Alignment.center,
                                       children: [
                                         CircleAvatar(
+                                          radius: 36,
                                           backgroundColor:
                                               Colors.deepPurple[100],
                                           backgroundImage: photoUrl != null &&
@@ -258,7 +275,7 @@ class _AndroidPlayerSelectionPageState
                                           child: photoUrl == null ||
                                                   photoUrl.isEmpty
                                               ? const Icon(Icons.person,
-                                                  size: 24,
+                                                  size: 32,
                                                   color: Colors.deepPurple)
                                               : null,
                                         ),
@@ -271,11 +288,11 @@ class _AndroidPlayerSelectionPageState
                                                 color: Colors.green,
                                                 shape: BoxShape.circle,
                                               ),
-                                              padding: const EdgeInsets.all(3),
+                                              padding: const EdgeInsets.all(5),
                                               child: const Icon(
                                                 Icons.check,
                                                 color: Colors.white,
-                                                size: 14,
+                                                size: 18,
                                               ),
                                             ),
                                           ),
@@ -284,14 +301,14 @@ class _AndroidPlayerSelectionPageState
                                   ),
                                 ),
                               ),
-                              const SizedBox(height: 4),
+                              const SizedBox(height: 8),
                               Text(
                                 displayName,
                                 textAlign: TextAlign.center,
                                 maxLines: 1,
                                 overflow: TextOverflow.ellipsis,
                                 style: const TextStyle(
-                                  fontSize: 11,
+                                  fontSize: 16,
                                   fontWeight: FontWeight.w600,
                                 ),
                               ),
@@ -301,7 +318,7 @@ class _AndroidPlayerSelectionPageState
                                 maxLines: 1,
                                 overflow: TextOverflow.ellipsis,
                                 style: const TextStyle(
-                                  fontSize: 9,
+                                  fontSize: 12,
                                   color: Colors.grey,
                                 ),
                               ),

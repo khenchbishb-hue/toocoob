@@ -1,7 +1,6 @@
 import 'package:flutter/material.dart';
 import 'dart:io' show Platform;
 import 'package:flutter/foundation.dart' show kIsWeb;
-import '../13_card_poker.dart';
 import '13_card_poker_ios.dart';
 import '../5_card_texas.dart';
 import '../muushig.dart';
@@ -63,7 +62,8 @@ class KindsOfGamePageIOS extends StatelessWidget {
         actions: [
           TextButton.icon(
             icon: const Icon(Icons.arrow_back, color: Colors.white, size: 18),
-            label: const Text('Буцах', style: TextStyle(color: Colors.white, fontSize: 14)),
+            label: const Text('Буцах',
+                style: TextStyle(color: Colors.white, fontSize: 14)),
             onPressed: () => Navigator.of(context).pop(),
           ),
           const SizedBox(width: 8),
@@ -190,7 +190,7 @@ class KindsOfGamePageIOS extends StatelessWidget {
         // Use iOS version for 13 card poker on iOS, web version otherwise
         page = !kIsWeb && Platform.isIOS
             ? CardPokerPageIOS(selectedUserIds: selectedUserIds)
-            : CardPokerPage(selectedUserIds: selectedUserIds);
+            : const Placeholder(); // Replace with a valid widget for web/other
         break;
       case 1:
         page = const CardTexasPage();
@@ -199,10 +199,16 @@ class KindsOfGamePageIOS extends StatelessWidget {
         page = const MuushigPage();
         break;
       case 3:
-        page = const BuurPage();
+        page = BuurPage(selectedUserIds: List<String>.from(selectedUserIds));
         break;
       case 4:
-        page = const Game108Page();
+        if (selectedUserIds.length < 2) {
+          ScaffoldMessenger.of(context).showSnackBar(
+            const SnackBar(content: Text('Дор хаяж 2 тоглогч сонгоно уу')),
+          );
+          return;
+        }
+        page = Game108Page(selectedUserIds: List<String>.from(selectedUserIds));
         break;
       case 5:
         page = const HodrokhPage();
