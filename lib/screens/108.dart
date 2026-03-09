@@ -1,14 +1,19 @@
 import 'package:flutter/material.dart';
 import 'package:cloud_firestore/cloud_firestore.dart';
 import 'package:toocoob/screens/player_selection_page.dart';
+import 'package:toocoob/utils/game_registrar_transfer.dart';
 
 class Game108Page extends StatefulWidget {
   const Game108Page({
     super.key,
     this.selectedUserIds = const [],
+    this.currentUserId,
+    this.canManageGames = false,
   });
 
   final List<String> selectedUserIds;
+  final String? currentUserId;
+  final bool canManageGames;
 
   @override
   State<Game108Page> createState() => _Game108PageState();
@@ -28,6 +33,12 @@ class _Game108PageState extends State<Game108Page> {
   final Set<String> _roundSubmittedSeatKeys = <String>{};
   final Map<String, TextEditingController> _scoreInputControllers = {};
   final Map<String, FocusNode> _scoreInputFocusNodes = {};
+  String? _currentRegistrarUserId;
+
+  bool get _canTransferRegistrar =>
+      widget.canManageGames &&
+      widget.currentUserId != null &&
+      _currentRegistrarUserId == widget.currentUserId;
 
   int get _playerCount => _selectedUserIdsSnapshot.isNotEmpty
       ? _selectedUserIdsSnapshot.length
@@ -39,6 +50,7 @@ class _Game108PageState extends State<Game108Page> {
   void initState() {
     super.initState();
     _selectedUserIdsSnapshot = List<String>.from(widget.selectedUserIds);
+    _currentRegistrarUserId = widget.currentUserId;
 
     _seats = _buildSeatSlots(_selectedUserIdsSnapshot);
     _orderedSeats = _activeSeatsFrom(_seats);
@@ -52,6 +64,61 @@ class _Game108PageState extends State<Game108Page> {
         _showPlayerOrderDialogIfNeeded();
       });
     }
+  }
+
+  Future<void> _transferRegistrarRole() async {
+    final registrarId = _currentRegistrarUserId;
+    if (!_canTransferRegistrar || registrarId == null || registrarId.isEmpty) {
+      return;
+    }
+
+    final playerUserIds = _orderedSeats
+        .map((seat) => seat.userId)
+        .whereType<String>()
+        .where((id) => id.isNotEmpty)
+        .toList(growable: false);
+
+    final nextRegistrarUserId = await GameRegistrarTransfer.transfer(
+      context,
+      currentRegistrarUserId: registrarId,
+      playerUserIds: playerUserIds,
+    );
+
+    if (!mounted || nextRegistrarUserId == null) return;
+    setState(() {
+      _currentRegistrarUserId = nextRegistrarUserId;
+    });
+  }
+
+  Future<void> _askRegistrarDecisionAtGameEndIfNeeded() async {
+    final resolvedRegistrarUserId =
+        await GameRegistrarTransfer.resolveAtGameEnd(
+      context,
+      originalRegistrarUserId: widget.currentUserId,
+      currentRegistrarUserId: _currentRegistrarUserId,
+      playerUserIds: _orderedSeats
+          .map((seat) => seat.userId)
+          .whereType<String>()
+          .where((id) => id.isNotEmpty)
+          .toList(growable: false),
+      displayNameForUserId: (userId) {
+        for (final seat in _orderedSeats) {
+          if (seat.userId == userId) return seat.displayName;
+        }
+        return 'Тоглогч';
+      },
+      usernameForUserId: (userId) {
+        for (final seat in _orderedSeats) {
+          if (seat.userId == userId) return seat.username;
+        }
+        return '';
+      },
+    );
+
+    if (!mounted || resolvedRegistrarUserId == null) return;
+    setState(() {
+      _currentRegistrarUserId = resolvedRegistrarUserId;
+    });
   }
 
   List<_Game108Seat> _activeSeatsFrom(List<_Game108Seat> source) {
@@ -368,6 +435,8 @@ class _Game108PageState extends State<Game108Page> {
       ),
     );
 
+    await _askRegistrarDecisionAtGameEndIfNeeded();
+
     WidgetsBinding.instance.addPostFrameCallback((_) {
       _showPlayerOrderDialogIfNeeded();
     });
@@ -431,10 +500,12 @@ class _Game108PageState extends State<Game108Page> {
     final playerUserNames = cappedSeats.map((seat) => seat.username).toList();
     final playerDisplayNames =
         cappedSeats.map((seat) => seat.displayName).toList();
+    final playerPhotoUrls = cappedSeats.map((seat) => seat.photoUrl).toList();
 
     await showPlayerOrderDialog(
       playerUserNames,
       playerDisplayNames,
+      playerPhotoUrls,
       (orderedIndices) {
         if (!mounted) return;
         setState(() {
@@ -461,6 +532,7 @@ class _Game108PageState extends State<Game108Page> {
   Future<void> showPlayerOrderDialog(
     List<String> playerUserNames,
     List<String> playerDisplayNames,
+    List<String?> playerPhotoUrls,
     void Function(List<int>) onOrderConfirmed, {
     VoidCallback? onCancelled,
   }) async {
@@ -538,19 +610,29 @@ class _Game108PageState extends State<Game108Page> {
                                     child: Stack(
                                       children: [
                                         Positioned.fill(
-                                          child: Image.asset(
-                                            'assets/13.jpg',
-                                            fit: BoxFit.cover,
-                                            errorBuilder:
-                                                (context, error, stackTrace) {
-                                              return Container(
-                                                color: Colors.blue[200],
-                                                alignment: Alignment.center,
-                                                child: Icon(
-                                                  Icons.person,
-                                                  size: 36,
-                                                  color: Colors.blue[700],
-                                                ),
+                                          child: Builder(
+                                            builder: (context) {
+                                              final photoUrl =
+                                                  i < playerPhotoUrls.length
+                                                      ? playerPhotoUrls[i]
+                                                      : null;
+                                              if (photoUrl != null &&
+                                                  photoUrl.isNotEmpty) {
+                                                return Image.network(
+                                                  photoUrl,
+                                                  fit: BoxFit.cover,
+                                                  errorBuilder:
+                                                      (context, _, __) {
+                                                    return Image.asset(
+                                                      'assets/13.jpg',
+                                                      fit: BoxFit.cover,
+                                                    );
+                                                  },
+                                                );
+                                              }
+                                              return Image.asset(
+                                                'assets/13.jpg',
+                                                fit: BoxFit.cover,
                                               );
                                             },
                                           ),
@@ -816,18 +898,27 @@ class _Game108PageState extends State<Game108Page> {
                                       child: Stack(
                                         children: [
                                           Positioned.fill(
-                                            child: Image.asset(
-                                              'assets/13.jpg',
-                                              fit: BoxFit.cover,
-                                              errorBuilder: (context, _, __) {
-                                                return Container(
-                                                  color: Colors.blue[200],
-                                                  alignment: Alignment.center,
-                                                  child: Icon(
-                                                    Icons.person,
-                                                    size: 36,
-                                                    color: Colors.blue[700],
-                                                  ),
+                                            child: Builder(
+                                              builder: (context) {
+                                                final photoUrl =
+                                                    players[i].photoUrl;
+                                                if (photoUrl != null &&
+                                                    photoUrl.isNotEmpty) {
+                                                  return Image.network(
+                                                    photoUrl,
+                                                    fit: BoxFit.cover,
+                                                    errorBuilder:
+                                                        (context, _, __) {
+                                                      return Image.asset(
+                                                        'assets/13.jpg',
+                                                        fit: BoxFit.cover,
+                                                      );
+                                                    },
+                                                  );
+                                                }
+                                                return Image.asset(
+                                                  'assets/13.jpg',
+                                                  fit: BoxFit.cover,
                                                 );
                                               },
                                             ),
@@ -1708,6 +1799,13 @@ class _Game108PageState extends State<Game108Page> {
                   style: const TextStyle(fontSize: 16)),
             ),
             const SizedBox(width: 8),
+            if (_canTransferRegistrar)
+              IconButton(
+                tooltip: 'Тоглолт бүртгэх эрх шилжүүлэх',
+                onPressed: _transferRegistrarRole,
+                icon: const Icon(Icons.keyboard),
+              ),
+            if (_canTransferRegistrar) const SizedBox(width: 8),
             IconButton(
               icon: const Icon(Icons.settings),
               onPressed: _showSettingsDialog,

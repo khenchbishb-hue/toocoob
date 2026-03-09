@@ -21,6 +21,8 @@ dependencies:
   printing: ^5.14.2
   pdf: ^3.11.3
   file_selector: ^1.0.3
+  http: ^1.2.2
+  url_launcher: ^6.3.0
 
 
 dev_dependencies:
@@ -46,4 +48,6 @@ flutter:
     - assets/all kinds.jpg
     - assets/a kind.jpg
     - assets/one time.jpg
+    - assets/fonts/NotoSans-Regular.ttf
+    - assets/fonts/NotoSans-Bold.ttf
     

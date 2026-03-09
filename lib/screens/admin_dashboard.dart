@@ -1,10 +1,14 @@
 import 'dart:async';
 
+import 'package:flutter/foundation.dart';
 import 'package:flutter/material.dart';
 import 'package:cloud_firestore/cloud_firestore.dart';
+import 'package:image_picker/image_picker.dart';
+import 'package:url_launcher/url_launcher.dart';
 import '../utils/firebase_initializer.dart';
 import 'package:firebase_core/firebase_core.dart';
 import '../utils/local_debug_file.dart';
+import '../utils/github_profile_image_service.dart';
 
 class AdminDashboard extends StatefulWidget {
   const AdminDashboard({super.key});
@@ -20,9 +24,15 @@ class _AdminDashboardState extends State<AdminDashboard> {
 
   final _bankController = TextEditingController();
   final _photoUrlController = TextEditingController();
+  bool _newUserCanManageGames = false;
 
   String? _generatedPassword;
   bool _isLoading = false;
+  bool _isUploadingPhoto = false;
+  final ImagePicker _imagePicker = ImagePicker();
+
+  bool get _isWebUploadReady =>
+      !kIsWeb || GitHubProfileImageService.isConfigured;
 
   String _normalizePhotoUrl(String input) {
     final trimmed = input.trim();
@@ -83,6 +93,26 @@ class _AdminDashboardState extends State<AdminDashboard> {
     });
 
     try {
+      if (_newUserCanManageGames) {
+        final existingManagers = await FirebaseFirestore.instance
+            .collection('users')
+            .where('canManageGames', isEqualTo: true)
+            .get();
+
+        if (existingManagers.docs.length >= 5) {
+          if (mounted) {
+            ScaffoldMessenger.of(context).showSnackBar(
+              const SnackBar(
+                content: Text(
+                  'Дээд тал нь 5 хэрэглэгчид бүртгэл хөтлөгчийн эрх олгоно.',
+                ),
+              ),
+            );
+          }
+          return;
+        }
+      }
+
       final phoneToSave =
           _phoneController.text.trim().replaceAll(RegExp(r'[\s\-\(\)]'), '');
       final photoUrl = _normalizePhotoUrl(_photoUrlController.text);
@@ -101,6 +131,7 @@ class _AdminDashboardState extends State<AdminDashboard> {
             ? null
             : _bankController.text.trim(),
         'photoUrl': photoUrl.isEmpty ? null : photoUrl,
+        'canManageGames': _newUserCanManageGames,
         'password': _generatedPassword ?? '',
         'createdAt': Timestamp.now(),
       };
@@ -137,6 +168,7 @@ class _AdminDashboardState extends State<AdminDashboard> {
           _phoneController.clear();
           _bankController.clear();
           _photoUrlController.clear();
+          _newUserCanManageGames = false;
         }
       }).catchError((e) async {
         print('[ADMIN] Error adding user: $e');
@@ -167,6 +199,186 @@ class _AdminDashboardState extends State<AdminDashboard> {
     }
   }
 
+  Future<void> _pickAndUploadPhotoForNewUser() async {
+    try {
+      if (!GitHubProfileImageService.isConfigured) {
+        if (mounted) {
+          ScaffoldMessenger.of(context).showSnackBar(
+            SnackBar(content: Text(GitHubProfileImageService.configHint())),
+          );
+        }
+        return;
+      }
+
+      final picked = await _imagePicker.pickImage(
+        source: ImageSource.gallery,
+        imageQuality: 85,
+      );
+
+      if (picked == null) return;
+
+      setState(() {
+        _isUploadingPhoto = true;
+      });
+
+      final bytes = await picked.readAsBytes();
+      final uploadedUrl = await GitHubProfileImageService.uploadProfileImage(
+        username: _usernameController.text.trim(),
+        bytes: bytes,
+      );
+
+      if (!mounted) return;
+      setState(() {
+        _photoUrlController.text = uploadedUrl;
+      });
+
+      ScaffoldMessenger.of(context).showSnackBar(
+        const SnackBar(
+            content: Text('Зураг GitHub дээр амжилттай хадгалагдлаа.')),
+      );
+    } catch (e) {
+      if (mounted) {
+        ScaffoldMessenger.of(context).showSnackBar(
+          SnackBar(content: Text('Зураг оруулахад алдаа гарлаа: $e')),
+        );
+      }
+    } finally {
+      if (mounted) {
+        setState(() {
+          _isUploadingPhoto = false;
+        });
+      }
+    }
+  }
+
+  Future<String?> _pickAndUploadPhotoForEdit({
+    required TextEditingController usernameCtrl,
+  }) async {
+    try {
+      if (!GitHubProfileImageService.isConfigured) {
+        if (mounted) {
+          ScaffoldMessenger.of(context).showSnackBar(
+            SnackBar(content: Text(GitHubProfileImageService.configHint())),
+          );
+        }
+        return null;
+      }
+
+      final picked = await _imagePicker.pickImage(
+        source: ImageSource.gallery,
+        imageQuality: 85,
+      );
+
+      if (picked == null) return null;
+
+      final bytes = await picked.readAsBytes();
+      final uploadedUrl = await GitHubProfileImageService.uploadProfileImage(
+        username: usernameCtrl.text.trim(),
+        bytes: bytes,
+      );
+
+      if (mounted) {
+        ScaffoldMessenger.of(context).showSnackBar(
+          const SnackBar(content: Text('Зураг GitHub дээр шинэчлэгдлээ.')),
+        );
+      }
+      return uploadedUrl;
+    } catch (e) {
+      if (mounted) {
+        ScaffoldMessenger.of(context).showSnackBar(
+          SnackBar(content: Text('Зураг шинэчлэхэд алдаа гарлаа: $e')),
+        );
+      }
+      return null;
+    }
+  }
+
+  Future<void> _openGitHubProfileFolder() async {
+    final uri = Uri.parse(GitHubProfileImageService.repositoryFolderWebUrl());
+    final launched = await launchUrl(uri, mode: LaunchMode.externalApplication);
+    if (!launched && mounted) {
+      ScaffoldMessenger.of(context).showSnackBar(
+        const SnackBar(content: Text('GitHub холбоос нээж чадсангүй.')),
+      );
+    }
+  }
+
+  Future<String?> _pickPhotoUrlFromGitHub() async {
+    try {
+      if (!GitHubProfileImageService.isConfigured) {
+        if (mounted) {
+          ScaffoldMessenger.of(context).showSnackBar(
+            SnackBar(content: Text(GitHubProfileImageService.configHint())),
+          );
+        }
+        return null;
+      }
+
+      final images = await GitHubProfileImageService.listProfileImages();
+      if (images.isEmpty) {
+        if (mounted) {
+          ScaffoldMessenger.of(context).showSnackBar(
+            const SnackBar(content: Text('GitHub хавтсанд зураг олдсонгүй.')),
+          );
+        }
+        return null;
+      }
+
+      if (!mounted) return null;
+      return showDialog<String>(
+        context: context,
+        builder: (context) => AlertDialog(
+          title: const Text('GitHub-оос зураг сонгох'),
+          content: SizedBox(
+            width: 420,
+            height: 420,
+            child: ListView.separated(
+              itemCount: images.length,
+              separatorBuilder: (_, __) => const Divider(height: 1),
+              itemBuilder: (context, index) {
+                final image = images[index];
+                return ListTile(
+                  dense: true,
+                  leading: CircleAvatar(
+                    backgroundImage: NetworkImage(image.rawUrl),
+                  ),
+                  title: Text(
+                    image.name,
+                    maxLines: 1,
+                    overflow: TextOverflow.ellipsis,
+                  ),
+                  subtitle: const Text('Сонгоход URL автоматаар бөглөгдөнө'),
+                  trailing: IconButton(
+                    tooltip: 'GitHub дээр харах',
+                    onPressed: () => launchUrl(
+                      Uri.parse(image.htmlUrl),
+                      mode: LaunchMode.externalApplication,
+                    ),
+                    icon: const Icon(Icons.open_in_new),
+                  ),
+                  onTap: () => Navigator.pop(context, image.rawUrl),
+                );
+              },
+            ),
+          ),
+          actions: [
+            TextButton(
+              onPressed: () => Navigator.pop(context),
+              child: const Text('Болих'),
+            ),
+          ],
+        ),
+      );
+    } catch (e) {
+      if (mounted) {
+        ScaffoldMessenger.of(context).showSnackBar(
+          SnackBar(content: Text('GitHub зураг ачаалахад алдаа гарлаа: $e')),
+        );
+      }
+      return null;
+    }
+  }
+
   String _generatePassword(int length) {
     const chars =
         'abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789';
@@ -186,6 +398,8 @@ class _AdminDashboardState extends State<AdminDashboard> {
     final passwordCtrl = TextEditingController(text: userData['password']);
     final photoUrlCtrl =
         TextEditingController(text: (userData['photoUrl'] ?? '').toString());
+    final bool originalCanManageGames = userData['canManageGames'] == true;
+    bool canManageGames = originalCanManageGames;
 
     String currentPhotoUrl = (userData['photoUrl'] ?? '').toString();
 
@@ -222,6 +436,58 @@ class _AdminDashboardState extends State<AdminDashboard> {
                     });
                   },
                 ),
+                const SizedBox(height: 8),
+                SizedBox(
+                  width: double.infinity,
+                  child: OutlinedButton.icon(
+                    onPressed: !_isWebUploadReady
+                        ? null
+                        : () async {
+                            final uploadedUrl =
+                                await _pickAndUploadPhotoForEdit(
+                              usernameCtrl: usernameCtrl,
+                            );
+                            if (uploadedUrl == null) return;
+                            setDialogState(() {
+                              photoUrlCtrl.text = uploadedUrl;
+                              currentPhotoUrl = uploadedUrl;
+                            });
+                          },
+                    icon: const Icon(Icons.add_a_photo_outlined),
+                    label: const Text(
+                        'Gallery-с зураг сонгоод GitHub руу хадгалах'),
+                  ),
+                ),
+                const SizedBox(height: 8),
+                Row(
+                  children: [
+                    Expanded(
+                      child: OutlinedButton.icon(
+                        onPressed: _openGitHubProfileFolder,
+                        icon: const Icon(Icons.folder_open_outlined),
+                        label: const Text('GitHub хавтас нээх'),
+                      ),
+                    ),
+                    const SizedBox(width: 8),
+                    Expanded(
+                      child: OutlinedButton.icon(
+                        onPressed: !_isWebUploadReady
+                            ? null
+                            : () async {
+                                final selectedUrl =
+                                    await _pickPhotoUrlFromGitHub();
+                                if (selectedUrl == null) return;
+                                setDialogState(() {
+                                  photoUrlCtrl.text = selectedUrl;
+                                  currentPhotoUrl = selectedUrl;
+                                });
+                              },
+                        icon: const Icon(Icons.cloud_download_outlined),
+                        label: const Text('GitHub-оос сонгох'),
+                      ),
+                    ),
+                  ],
+                ),
                 const SizedBox(height: 16),
                 TextField(
                   controller: usernameCtrl,
@@ -251,6 +517,21 @@ class _AdminDashboardState extends State<AdminDashboard> {
                   controller: passwordCtrl,
                   decoration: const InputDecoration(labelText: 'Нууц үг'),
                 ),
+                const SizedBox(height: 12),
+                SwitchListTile.adaptive(
+                  contentPadding: EdgeInsets.zero,
+                  title: const Text('Тоглоомын бүртгэл хөтлөх эрх'),
+                  subtitle: const Text(
+                    'Оноо оруулах болон тоглолтын урсгал руу орох эрх',
+                    style: TextStyle(fontSize: 12),
+                  ),
+                  value: canManageGames,
+                  onChanged: (value) {
+                    setDialogState(() {
+                      canManageGames = value;
+                    });
+                  },
+                ),
               ],
             ),
           ),
@@ -270,6 +551,29 @@ class _AdminDashboardState extends State<AdminDashboard> {
 
     if (result == true) {
       try {
+        if (canManageGames && !originalCanManageGames) {
+          final existingManagers = await FirebaseFirestore.instance
+              .collection('users')
+              .where('canManageGames', isEqualTo: true)
+              .get();
+
+          final managerCountWithoutCurrent =
+              existingManagers.docs.where((doc) => doc.id != docId).length;
+
+          if (managerCountWithoutCurrent >= 5) {
+            if (mounted) {
+              ScaffoldMessenger.of(context).showSnackBar(
+                const SnackBar(
+                  content: Text(
+                    'Дээд тал нь 5 хэрэглэгчид тоглоомын бүртгэл хөтлөх эрх олгоно.',
+                  ),
+                ),
+              );
+            }
+            return;
+          }
+        }
+
         // Эхлээд мэдээлэл update хийх
         final updateData = {
           'username': usernameCtrl.text.trim(),
@@ -277,6 +581,7 @@ class _AdminDashboardState extends State<AdminDashboard> {
           'phone': phoneCtrl.text.trim(),
           'bank': bankCtrl.text.trim(),
           'password': passwordCtrl.text.trim(),
+          'canManageGames': canManageGames,
           'photoUrl': _normalizePhotoUrl(photoUrlCtrl.text).isEmpty
               ? null
               : _normalizePhotoUrl(photoUrlCtrl.text),
@@ -313,6 +618,57 @@ class _AdminDashboardState extends State<AdminDashboard> {
     bankCtrl.dispose();
     passwordCtrl.dispose();
     photoUrlCtrl.dispose();
+  }
+
+  Future<void> _toggleGameManagerRoleFromCard({
+    required String docId,
+    required bool currentValue,
+  }) async {
+    try {
+      if (!currentValue) {
+        final existingManagers = await FirebaseFirestore.instance
+            .collection('users')
+            .where('canManageGames', isEqualTo: true)
+            .get();
+        final countWithoutCurrent =
+            existingManagers.docs.where((doc) => doc.id != docId).length;
+        if (countWithoutCurrent >= 5) {
+          if (mounted) {
+            ScaffoldMessenger.of(context).showSnackBar(
+              const SnackBar(
+                content: Text(
+                  'Дээд тал нь 5 хэрэглэгчид бүртгэл хөтлөгчийн эрх олгоно.',
+                ),
+              ),
+            );
+          }
+          return;
+        }
+      }
+
+      await FirebaseFirestore.instance
+          .collection('users')
+          .doc(docId)
+          .update({'canManageGames': !currentValue});
+
+      if (mounted) {
+        ScaffoldMessenger.of(context).showSnackBar(
+          SnackBar(
+            content: Text(
+              !currentValue
+                  ? 'Бүртгэл хөтлөгчийн эрх олголоо.'
+                  : 'Бүртгэл хөтлөгчийн эрх цуцаллаа.',
+            ),
+          ),
+        );
+      }
+    } catch (e) {
+      if (mounted) {
+        ScaffoldMessenger.of(context).showSnackBar(
+          SnackBar(content: Text('Эрх шинэчлэхэд алдаа гарлаа: $e')),
+        );
+      }
+    }
   }
 
   Future<void> _deleteUser(String docId, String username) async {
@@ -409,8 +765,9 @@ class _AdminDashboardState extends State<AdminDashboard> {
             CircleAvatar(
               radius: 50,
               backgroundColor: Colors.deepPurple[100],
-              backgroundImage: _photoUrlController.text.trim().isNotEmpty
-                  ? NetworkImage(_photoUrlController.text.trim())
+              backgroundImage: _normalizePhotoUrl(_photoUrlController.text)
+                      .isNotEmpty
+                  ? NetworkImage(_normalizePhotoUrl(_photoUrlController.text))
                   : null,
               child: _photoUrlController.text.trim().isEmpty
                   ? const Icon(Icons.person, size: 40)
@@ -421,12 +778,62 @@ class _AdminDashboardState extends State<AdminDashboard> {
             TextField(
               controller: _photoUrlController,
               onChanged: (_) => setState(() {}),
-              decoration: const InputDecoration(
+              decoration: InputDecoration(
                 labelText: 'Зургийн URL',
-                border: OutlineInputBorder(),
-                helperText:
-                    'GitHub blob/raw URL оруулж болно (автоматаар raw болгож хадгална)',
+                border: const OutlineInputBorder(),
+                helperText: _isWebUploadReady
+                    ? 'GitHub blob/raw URL оруулж болно (автоматаар raw болгож хадгална)'
+                    : 'GitHub тохиргоо дутуу байна. GITHUB_OWNER, GITHUB_REPO, GITHUB_TOKEN define өгнө үү.',
               ),
+            ),
+            const SizedBox(height: 10),
+            SizedBox(
+              width: double.infinity,
+              child: OutlinedButton.icon(
+                onPressed: (_isUploadingPhoto || !_isWebUploadReady)
+                    ? null
+                    : _pickAndUploadPhotoForNewUser,
+                icon: _isUploadingPhoto
+                    ? const SizedBox(
+                        width: 18,
+                        height: 18,
+                        child: CircularProgressIndicator(strokeWidth: 2),
+                      )
+                    : const Icon(Icons.add_a_photo_outlined),
+                label: Text(_isUploadingPhoto
+                    ? 'GitHub руу оруулж байна...'
+                    : (_isWebUploadReady
+                        ? 'Gallery-с зураг сонгоод GitHub руу хадгалах'
+                        : 'GitHub тохиргоо дутуу (URL оруулна)')),
+              ),
+            ),
+            const SizedBox(height: 8),
+            Row(
+              children: [
+                Expanded(
+                  child: OutlinedButton.icon(
+                    onPressed: _openGitHubProfileFolder,
+                    icon: const Icon(Icons.folder_open_outlined),
+                    label: const Text('GitHub хавтас нээх'),
+                  ),
+                ),
+                const SizedBox(width: 8),
+                Expanded(
+                  child: OutlinedButton.icon(
+                    onPressed: !_isWebUploadReady
+                        ? null
+                        : () async {
+                            final selectedUrl = await _pickPhotoUrlFromGitHub();
+                            if (selectedUrl == null) return;
+                            setState(() {
+                              _photoUrlController.text = selectedUrl;
+                            });
+                          },
+                    icon: const Icon(Icons.cloud_download_outlined),
+                    label: const Text('GitHub-оос сонгох'),
+                  ),
+                ),
+              ],
             ),
             const SizedBox(height: 16),
 
@@ -469,6 +876,36 @@ class _AdminDashboardState extends State<AdminDashboard> {
                 helperText: 'Сонголтоор',
               ),
               keyboardType: TextInputType.number,
+            ),
+            const SizedBox(height: 10),
+            Row(
+              children: [
+                IconButton(
+                  icon: Icon(
+                    Icons.keyboard,
+                    color: _newUserCanManageGames ? Colors.green : Colors.grey,
+                  ),
+                  tooltip: 'Бүртгэл хөтлөгчийн эрх',
+                  onPressed: () {
+                    setState(() {
+                      _newUserCanManageGames = !_newUserCanManageGames;
+                    });
+                  },
+                ),
+                Expanded(
+                  child: Text(
+                    _newUserCanManageGames
+                        ? 'Энэ хэрэглэгчид бүртгэл хөтлөгчийн эрх өгнө'
+                        : 'Энгийн хэрэглэгчээр бүртгэнэ',
+                    style: TextStyle(
+                      color: _newUserCanManageGames
+                          ? Colors.green.shade700
+                          : Colors.grey.shade700,
+                      fontWeight: FontWeight.w600,
+                    ),
+                  ),
+                ),
+              ],
             ),
             const SizedBox(height: 24),
 
@@ -567,6 +1004,7 @@ class _AdminDashboardState extends State<AdminDashboard> {
                       final photoUrl = (data['photoUrl'] ?? '').toString();
                       final hasPhoto = photoUrl.isNotEmpty;
                       final password = data['password'] ?? '';
+                      final canManageGames = data['canManageGames'] == true;
 
                       return Card(
                         elevation: 2,
@@ -616,6 +1054,20 @@ class _AdminDashboardState extends State<AdminDashboard> {
                                       maxLines: 1,
                                       overflow: TextOverflow.ellipsis,
                                     ),
+                                    Text(
+                                      canManageGames
+                                          ? 'Эрх: Тоглоом бүртгэл'
+                                          : 'Эрх: Энгийн',
+                                      style: TextStyle(
+                                        fontSize: 8,
+                                        color: canManageGames
+                                            ? Colors.green
+                                            : Colors.grey,
+                                        fontWeight: FontWeight.bold,
+                                      ),
+                                      maxLines: 1,
+                                      overflow: TextOverflow.ellipsis,
+                                    ),
                                   ],
                                 ),
                               ),
@@ -623,6 +1075,25 @@ class _AdminDashboardState extends State<AdminDashboard> {
                               Column(
                                 mainAxisAlignment: MainAxisAlignment.center,
                                 children: [
+                                  IconButton(
+                                    icon: Icon(
+                                      Icons.keyboard,
+                                      color: canManageGames
+                                          ? Colors.green
+                                          : Colors.grey,
+                                      size: 18,
+                                    ),
+                                    onPressed: () =>
+                                        _toggleGameManagerRoleFromCard(
+                                      docId: user.id,
+                                      currentValue: canManageGames,
+                                    ),
+                                    tooltip: canManageGames
+                                        ? 'Бүртгэл хөтлөгчийн эрхийг цуцлах'
+                                        : 'Бүртгэл хөтлөгчийн эрх олгох',
+                                    padding: EdgeInsets.zero,
+                                    constraints: const BoxConstraints(),
+                                  ),
                                   IconButton(
                                     icon: const Icon(Icons.edit,
                                         color: Colors.blue, size: 18),

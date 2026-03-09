@@ -1,6 +1,12 @@
 import 'package:flutter/material.dart';
+import 'package:flutter/services.dart';
 import 'package:cloud_firestore/cloud_firestore.dart';
+import 'package:pdf/widgets.dart' as pw;
+import 'package:printing/printing.dart';
+import 'package:toocoob/screens/statistics_dashboard.dart';
+import 'package:toocoob/utils/statistics_repository.dart';
 import 'package:toocoob/screens/player_selection_page.dart';
+import 'package:toocoob/utils/game_registrar_transfer.dart';
 
 enum _MuushigSettlementMode {
   basePenalty,
@@ -12,9 +18,13 @@ class MuushigPage extends StatefulWidget {
   const MuushigPage({
     super.key,
     this.selectedUserIds = const [],
+    this.currentUserId,
+    this.canManageGames = false,
   });
 
   final List<String> selectedUserIds;
+  final String? currentUserId;
+  final bool canManageGames;
 
   @override
   State<MuushigPage> createState() => _MuushigPageState();
@@ -41,6 +51,13 @@ class _MuushigPageState extends State<MuushigPage> {
   final Map<String, FocusNode> _roundScoreFocusNodes = {};
   final Set<String> _penaltyFiveUsernames = <String>{};
   bool _selectedProfilesLoaded = true;
+  bool _sessionAddedToStatistics = false;
+  String? _currentRegistrarUserId;
+
+  bool get _canTransferRegistrar =>
+      widget.canManageGames &&
+      widget.currentUserId != null &&
+      _currentRegistrarUserId == widget.currentUserId;
 
   _MuushigSettlementMode _settlementMode = _MuushigSettlementMode.basePenalty;
   int _baseNormalAmount = 5000;
@@ -56,6 +73,7 @@ class _MuushigPageState extends State<MuushigPage> {
   @override
   void initState() {
     super.initState();
+    _currentRegistrarUserId = widget.currentUserId;
 
     _selectedUserIdsSnapshot = List<String>.from(widget.selectedUserIds);
 
@@ -80,6 +98,61 @@ class _MuushigPageState extends State<MuushigPage> {
     if (_selectedUserIdsSnapshot.isNotEmpty) {
       _loadSelectedUserProfiles();
     }
+  }
+
+  Future<void> _transferRegistrarRole() async {
+    final registrarId = _currentRegistrarUserId;
+    if (!_canTransferRegistrar || registrarId == null || registrarId.isEmpty) {
+      return;
+    }
+
+    final playerUserIds = _seats
+        .map((seat) => seat.userId)
+        .whereType<String>()
+        .where((id) => id.isNotEmpty)
+        .toList(growable: false);
+
+    final nextRegistrarUserId = await GameRegistrarTransfer.transfer(
+      context,
+      currentRegistrarUserId: registrarId,
+      playerUserIds: playerUserIds,
+    );
+
+    if (!mounted || nextRegistrarUserId == null) return;
+    setState(() {
+      _currentRegistrarUserId = nextRegistrarUserId;
+    });
+  }
+
+  Future<void> _askRegistrarDecisionAtGameEndIfNeeded() async {
+    final resolvedRegistrarUserId =
+        await GameRegistrarTransfer.resolveAtGameEnd(
+      context,
+      originalRegistrarUserId: widget.currentUserId,
+      currentRegistrarUserId: _currentRegistrarUserId,
+      playerUserIds: _seats
+          .map((seat) => seat.userId)
+          .whereType<String>()
+          .where((id) => id.isNotEmpty)
+          .toList(growable: false),
+      displayNameForUserId: (userId) {
+        for (final seat in _seats) {
+          if (seat.userId == userId) return seat.displayName;
+        }
+        return 'Тоглогч';
+      },
+      usernameForUserId: (userId) {
+        for (final seat in _seats) {
+          if (seat.userId == userId) return seat.username;
+        }
+        return '';
+      },
+    );
+
+    if (!mounted || resolvedRegistrarUserId == null) return;
+    setState(() {
+      _currentRegistrarUserId = resolvedRegistrarUserId;
+    });
   }
 
   Future<void> _loadSelectedUserProfiles() async {
@@ -117,6 +190,7 @@ class _MuushigPageState extends State<MuushigPage> {
                   fetchedDisplayName != null && fetchedDisplayName.isNotEmpty
                       ? fetchedDisplayName
                       : nextSeat.displayName,
+              photoUrl: (data['photoUrl'] as String?)?.trim(),
             );
           }
         } catch (_) {}
@@ -596,6 +670,7 @@ class _MuushigPageState extends State<MuushigPage> {
       await showPlayerOrderDialog(
         _seats.map((seat) => seat.username).toList(),
         _seats.map((seat) => seat.displayName).toList(),
+        _seats.map((seat) => seat.photoUrl).toList(),
         (orderedIndices) {
           setState(() {
             final previousSeats = List<_MuushigSeat>.from(_seats);
@@ -690,6 +765,124 @@ class _MuushigPageState extends State<MuushigPage> {
     ].join('\n');
   }
 
+  Future<void> _addCurrentSessionToStatisticsIfNeeded() async {
+    if (_sessionAddedToStatistics) return;
+
+    final repository = StatsRepository();
+    final players = List<StatsPlayerResult>.generate(_seats.length, (index) {
+      final seat = _seats[index];
+      return StatsPlayerResult(
+        userId: seat.userId ?? seat.username,
+        username: seat.username,
+        displayName: seat.displayName,
+        money: seat.money,
+      );
+    });
+
+    final totalRounds =
+        _sessionOrdinaryRounds + _sessionBoltRounds + _sessionMiddleBoltRounds;
+
+    final session = StatsSession(
+      sessionId:
+          'muushig-${DateTime.now().microsecondsSinceEpoch}-${_seats.length}',
+      gameKey: 'muushig',
+      gameLabel: 'МУУШИГ',
+      playedAt: DateTime.now(),
+      players: players,
+      totalRounds: totalRounds,
+    );
+
+    await repository.addSession(session);
+    _sessionAddedToStatistics = true;
+  }
+
+  Future<void> _openStatisticsDashboard() async {
+    await _addCurrentSessionToStatisticsIfNeeded();
+    if (!mounted) return;
+    await Navigator.of(context).push(
+      MaterialPageRoute(builder: (context) => const StatisticsDashboardPage()),
+    );
+  }
+
+  Future<Uint8List> _buildSessionReportPdfBytes() async {
+    final doc = pw.Document();
+    final baseFontData =
+        await rootBundle.load('assets/fonts/NotoSans-Regular.ttf');
+    final boldFontData =
+        await rootBundle.load('assets/fonts/NotoSans-Bold.ttf');
+    final baseFont = pw.Font.ttf(baseFontData);
+    final boldFont = pw.Font.ttf(boldFontData);
+
+    final pdfTheme = pw.ThemeData.withFont(
+      base: baseFont,
+      bold: boldFont,
+    );
+
+    final totalRounds =
+        _sessionOrdinaryRounds + _sessionBoltRounds + _sessionMiddleBoltRounds;
+    final initialPlayerCount = _selectedUserIdsSnapshot.isNotEmpty
+        ? _selectedUserIdsSnapshot.length
+        : _seats.length;
+
+    final tableData = List<List<String>>.generate(
+      _seats.length,
+      (index) {
+        final seat = _seats[index];
+        return [
+          '${index + 1}',
+          seat.displayName,
+          '@${seat.username}',
+          '${seat.money}',
+        ];
+      },
+    );
+
+    doc.addPage(
+      pw.MultiPage(
+        theme: pdfTheme,
+        build: (context) => [
+          pw.Text(
+            'МУУШИГ - ТОГЛОЛТЫН ТАЙЛАН',
+            style: pw.TextStyle(fontSize: 18, fontWeight: pw.FontWeight.bold),
+          ),
+          pw.SizedBox(height: 8),
+          pw.Text('Эхний тоглогчийн тоо: $initialPlayerCount'),
+          pw.Text('Нийт оролцсон тоглогч: ${_seats.length}'),
+          pw.Text('Нэмсэн тоглогч: 0'),
+          pw.Text('Хассан тоглогч: 0'),
+          pw.Text('Нийт раунд: $totalRounds'),
+          pw.Text('Энгийн тоглолт: $_sessionOrdinaryRounds'),
+          pw.Text('Боолт тоглолт: $_sessionBoltRounds'),
+          pw.Text('Дундын боолт: $_sessionMiddleBoltRounds'),
+          pw.SizedBox(height: 12),
+          pw.TableHelper.fromTextArray(
+            headers: const ['#', 'Display name', 'Username', 'Мөнгө (₮)'],
+            data: tableData,
+            headerStyle: pw.TextStyle(font: boldFont),
+            cellStyle: pw.TextStyle(font: baseFont),
+          ),
+        ],
+      ),
+    );
+
+    return await doc.save();
+  }
+
+  Future<void> _printSessionReport() async {
+    try {
+      final bytes = await _buildSessionReportPdfBytes();
+      await Printing.layoutPdf(
+        name: 'toocoob_report_muushig',
+        onLayout: (_) async => bytes,
+      );
+    } catch (_) {
+      if (!mounted) return;
+      ScaffoldMessenger.of(context).showSnackBar(
+        const SnackBar(content: Text('Хэвлэх цонх нээгдсэнгүй.')),
+      );
+    }
+  }
+
   Future<void> _showExitReportAndFinish() async {
     final shouldFinish = await showDialog<bool>(
       context: context,
@@ -705,6 +898,20 @@ class _MuushigPageState extends State<MuushigPage> {
           ),
           actions: [
             TextButton(
+              onPressed: () async {
+                Navigator.of(dialogContext).pop(false);
+                await _printSessionReport();
+              },
+              child: const Text('Хэвлэх'),
+            ),
+            TextButton(
+              onPressed: () async {
+                Navigator.of(dialogContext).pop(false);
+                await _openStatisticsDashboard();
+              },
+              child: const Text('Статистик'),
+            ),
+            TextButton(
               onPressed: () => Navigator.of(dialogContext).pop(false),
               child: const Text('Буцах'),
             ),
@@ -718,6 +925,8 @@ class _MuushigPageState extends State<MuushigPage> {
     );
 
     if (shouldFinish == true && mounted) {
+      await _askRegistrarDecisionAtGameEndIfNeeded();
+      if (!mounted) return;
       Navigator.of(context).pushAndRemoveUntil(
         MaterialPageRoute(builder: (context) => const PlayerSelectionPage()),
         (route) => false,
@@ -892,6 +1101,7 @@ class _MuushigPageState extends State<MuushigPage> {
   Future<void> showPlayerOrderDialog(
       List<String> playerUserNames,
       List<String> playerDisplayNames,
+      List<String?> playerPhotoUrls,
       void Function(List<int>) onOrderConfirmed) async {
     List<int?> selectedOrder = List.filled(playerDisplayNames.length, null);
     int currentOrder = 1;
@@ -966,19 +1176,29 @@ class _MuushigPageState extends State<MuushigPage> {
                                     child: Stack(
                                       children: [
                                         Positioned.fill(
-                                          child: Image.asset(
-                                            'assets/13.jpg',
-                                            fit: BoxFit.cover,
-                                            errorBuilder:
-                                                (context, error, stackTrace) {
-                                              return Container(
-                                                color: Colors.blue[200],
-                                                alignment: Alignment.center,
-                                                child: Icon(
-                                                  Icons.person,
-                                                  size: 36,
-                                                  color: Colors.blue[700],
-                                                ),
+                                          child: Builder(
+                                            builder: (context) {
+                                              final photoUrl =
+                                                  i < playerPhotoUrls.length
+                                                      ? playerPhotoUrls[i]
+                                                      : null;
+                                              if (photoUrl != null &&
+                                                  photoUrl.isNotEmpty) {
+                                                return Image.network(
+                                                  photoUrl,
+                                                  fit: BoxFit.cover,
+                                                  errorBuilder:
+                                                      (context, _, __) {
+                                                    return Image.asset(
+                                                      'assets/13.jpg',
+                                                      fit: BoxFit.cover,
+                                                    );
+                                                  },
+                                                );
+                                              }
+                                              return Image.asset(
+                                                'assets/13.jpg',
+                                                fit: BoxFit.cover,
                                               );
                                             },
                                           ),
@@ -1177,19 +1397,27 @@ class _MuushigPageState extends State<MuushigPage> {
                                     child: Stack(
                                       children: [
                                         Positioned.fill(
-                                          child: Image.asset(
-                                            'assets/13.jpg',
-                                            fit: BoxFit.cover,
-                                            errorBuilder:
-                                                (context, error, stackTrace) {
-                                              return Container(
-                                                color: Colors.blue[200],
-                                                alignment: Alignment.center,
-                                                child: Icon(
-                                                  Icons.person,
-                                                  size: 36,
-                                                  color: Colors.blue[700],
-                                                ),
+                                          child: Builder(
+                                            builder: (context) {
+                                              final photoUrl =
+                                                  _seats[i].photoUrl;
+                                              if (photoUrl != null &&
+                                                  photoUrl.isNotEmpty) {
+                                                return Image.network(
+                                                  photoUrl,
+                                                  fit: BoxFit.cover,
+                                                  errorBuilder:
+                                                      (context, _, __) {
+                                                    return Image.asset(
+                                                      'assets/13.jpg',
+                                                      fit: BoxFit.cover,
+                                                    );
+                                                  },
+                                                );
+                                              }
+                                              return Image.asset(
+                                                'assets/13.jpg',
+                                                fit: BoxFit.cover,
                                               );
                                             },
                                           ),
@@ -1443,9 +1671,9 @@ class _MuushigPageState extends State<MuushigPage> {
 
     setState(() {
       if (winnerIndex != null) {
-        updatedSeats[winnerIndex!] = updatedSeats[winnerIndex!]
-            .copyWith(wins: updatedSeats[winnerIndex!].wins + 1);
-        _applySettlementForWinner(updatedSeats, winnerIndex!);
+        updatedSeats[winnerIndex] = updatedSeats[winnerIndex]
+            .copyWith(wins: updatedSeats[winnerIndex].wins + 1);
+        _applySettlementForWinner(updatedSeats, winnerIndex);
       }
 
       _seats = updatedSeats;
@@ -1515,19 +1743,27 @@ class _MuushigPageState extends State<MuushigPage> {
                               child: Stack(
                                 children: [
                                   Positioned.fill(
-                                    child: Image.asset(
-                                      'assets/13.jpg',
-                                      fit: BoxFit.cover,
-                                      errorBuilder:
-                                          (context, error, stackTrace) {
-                                        return Container(
-                                          color: Colors.blue[200],
-                                          alignment: Alignment.center,
-                                          child: Icon(
-                                            Icons.person,
-                                            size: 36,
-                                            color: Colors.blue[700],
-                                          ),
+                                    child: Builder(
+                                      builder: (context) {
+                                        final photoUrl =
+                                            _seats[candidateSeatIndices[i]]
+                                                .photoUrl;
+                                        if (photoUrl != null &&
+                                            photoUrl.isNotEmpty) {
+                                          return Image.network(
+                                            photoUrl,
+                                            fit: BoxFit.cover,
+                                            errorBuilder: (context, _, __) {
+                                              return Image.asset(
+                                                'assets/13.jpg',
+                                                fit: BoxFit.cover,
+                                              );
+                                            },
+                                          );
+                                        }
+                                        return Image.asset(
+                                          'assets/13.jpg',
+                                          fit: BoxFit.cover,
                                         );
                                       },
                                     ),
@@ -1693,16 +1929,38 @@ class _MuushigPageState extends State<MuushigPage> {
                   SizedBox(
                     width: imageSide,
                     height: imageSide,
-                    child: Container(
-                      decoration: BoxDecoration(
-                        color: Colors.white.withOpacity(0.28),
-                        borderRadius: BorderRadius.circular(8),
-                      ),
-                      child: Icon(
-                        Icons.person,
-                        size: imageSide * 0.62,
-                        color: const Color(0xFF8E2F1E),
-                      ),
+                    child: ClipRRect(
+                      borderRadius: BorderRadius.circular(8),
+                      child:
+                          (seat.photoUrl != null && seat.photoUrl!.isNotEmpty)
+                              ? Image.network(
+                                  seat.photoUrl!,
+                                  fit: BoxFit.cover,
+                                  errorBuilder: (context, _, __) {
+                                    return Container(
+                                      decoration: BoxDecoration(
+                                        color: Colors.white.withOpacity(0.28),
+                                        borderRadius: BorderRadius.circular(8),
+                                      ),
+                                      child: Icon(
+                                        Icons.person,
+                                        size: imageSide * 0.62,
+                                        color: const Color(0xFF8E2F1E),
+                                      ),
+                                    );
+                                  },
+                                )
+                              : Container(
+                                  decoration: BoxDecoration(
+                                    color: Colors.white.withOpacity(0.28),
+                                    borderRadius: BorderRadius.circular(8),
+                                  ),
+                                  child: Icon(
+                                    Icons.person,
+                                    size: imageSide * 0.62,
+                                    color: const Color(0xFF8E2F1E),
+                                  ),
+                                ),
                     ),
                   ),
                   Positioned(
@@ -2001,6 +2259,7 @@ class _MuushigPageState extends State<MuushigPage> {
         showPlayerOrderDialog(
           _seats.map((seat) => seat.username).toList(),
           _seats.map((seat) => seat.displayName).toList(),
+          _seats.map((seat) => seat.photoUrl).toList(),
           (orderedIndices) {
             setState(() {
               final previousSeats = List<_MuushigSeat>.from(_seats);
@@ -2074,6 +2333,12 @@ class _MuushigPageState extends State<MuushigPage> {
                 ),
               ),
               const SizedBox(width: 8),
+              if (_canTransferRegistrar)
+                IconButton(
+                  tooltip: 'Тоглолт бүртгэх эрх шилжүүлэх',
+                  onPressed: _transferRegistrarRole,
+                  icon: const Icon(Icons.keyboard),
+                ),
               IconButton(
                 icon: const Icon(Icons.settings),
                 onPressed: _showMuushigSettingsDialog,
@@ -2125,6 +2390,7 @@ class _MuushigSeat {
   final String? userId;
   final String username;
   final String displayName;
+  final String? photoUrl;
   final String roundScoreText;
   final String totalScoreText;
   final int wins;
@@ -2136,6 +2402,7 @@ class _MuushigSeat {
     this.userId,
     required this.username,
     required this.displayName,
+    this.photoUrl,
     required this.roundScoreText,
     required this.totalScoreText,
     required this.wins,
@@ -2148,6 +2415,7 @@ class _MuushigSeat {
     String? userId,
     String? username,
     String? displayName,
+    String? photoUrl,
     String? roundScoreText,
     String? totalScoreText,
     int? wins,
@@ -2159,6 +2427,7 @@ class _MuushigSeat {
       userId: userId ?? this.userId,
       username: username ?? this.username,
       displayName: displayName ?? this.displayName,
+      photoUrl: photoUrl ?? this.photoUrl,
       roundScoreText: roundScoreText ?? this.roundScoreText,
       totalScoreText: totalScoreText ?? this.totalScoreText,
       wins: wins ?? this.wins,
