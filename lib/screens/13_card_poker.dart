@@ -10,9 +10,24 @@ import 'package:printing/printing.dart';
 import 'package:share_plus/share_plus.dart';
 import 'package:shared_preferences/shared_preferences.dart';
 import '../utils/statistics_repository.dart';
+import '../utils/saved_game_sessions_repository.dart';
+import '../utils/active_tables_repository.dart';
 import 'statistics_dashboard.dart';
+import '108.dart';
+import '5_card_texas.dart';
+import '501.dart';
+import 'buur.dart';
+import 'canasta.dart';
+import 'durak.dart';
+import 'muushig.dart';
+import 'nvx_shaxax.dart';
 import 'player_selection_page.dart';
+import 'playing_format.dart';
 import 'kinds_of_game.dart';
+import 'xodrox.dart';
+import '../widgets/unified_game_app_bar.dart';
+import '../widgets/active_table_route_scope.dart';
+import '../utils/active_table_route_registry.dart';
 
 // PlayerSelectScreen for inviting new player
 class PlayerSelectScreen extends StatefulWidget {
@@ -96,12 +111,24 @@ class ThirteenCardPokerScreen extends StatefulWidget {
   final List<String> selectedUserIds;
   final String? currentRegistrarUserId;
   final bool canManageGames;
+  final String? initialSavedSessionId;
+  final bool autoReturnOnWinner;
+  final Map<String, int>? multiWinsByUserId;
+  final int? multiCurrentTypeNumber;
+  final int? multiTotalTypeCount;
+  final bool promptInitialPlayerOrder;
   const ThirteenCardPokerScreen({
     super.key,
     required this.gameType,
     this.selectedUserIds = const [],
     this.currentRegistrarUserId,
     this.canManageGames = false,
+    this.initialSavedSessionId,
+    this.autoReturnOnWinner = false,
+    this.multiWinsByUserId,
+    this.multiCurrentTypeNumber,
+    this.multiTotalTypeCount,
+    this.promptInitialPlayerOrder = true,
   });
 
   @override
@@ -110,6 +137,9 @@ class ThirteenCardPokerScreen extends StatefulWidget {
 
 class _PlayingTableScreenState extends State<ThirteenCardPokerScreen> {
   static const String _statisticsPrefsKey = 'toocoob.statistics.v1';
+  final SavedGameSessionsRepository _savedSessionsRepo =
+      SavedGameSessionsRepository();
+  final ActiveTablesRepository _activeTablesRepo = ActiveTablesRepository();
 
   // --- State variables ---
   int currentTable = 1;
@@ -148,6 +178,8 @@ class _PlayingTableScreenState extends State<ThirteenCardPokerScreen> {
   final Set<String> _explicitZeroRoundUserIds = <String>{};
   final Set<String> _forcedEliminatedUserIds = <String>{};
   final Set<String> _paidOutRoundLoserUserIds = <String>{};
+  // Tracks elimination order: userId → U-rank (1=first eliminated, 2=second, …)
+  final Map<String, int> _uRankings = {};
   bool _isResolvingRound = false;
   bool _isSubmittingInlineScore = false;
   bool _isProcessingEighthSubmit = false;
@@ -173,6 +205,8 @@ class _PlayingTableScreenState extends State<ThirteenCardPokerScreen> {
   final List<List<String>> _durakBlocks = [];
   final int _durakWinThreshold = 8;
   String? _currentRegistrarUserId;
+  String? _activeSavedSessionId;
+  bool _multiAutoReturnTriggered = false;
 
   bool get _canTransferRegistrarPermission {
     return widget.canManageGames &&
@@ -472,8 +506,19 @@ class _PlayingTableScreenState extends State<ThirteenCardPokerScreen> {
   int get _activeBetAmount => _isBoltMode ? _boltBetAmount : _betAmount;
 
   String get _roundInfoLabel {
+    if (widget.autoReturnOnWinner) {
+      return 'Олон төрөлт';
+    }
     if (_isBoltMode) {
       return 'Боолт №$_boltRoundNumber';
+    }
+    if (widget.multiWinsByUserId != null) {
+      final current = widget.multiCurrentTypeNumber;
+      final total = widget.multiTotalTypeCount;
+      if (current != null && total != null && total > 0) {
+        return 'Төрөл $current/$total';
+      }
+      return 'Төрөл №$roundNumber';
     }
     return 'Тоглолтын №$roundNumber';
   }
@@ -523,6 +568,16 @@ class _PlayingTableScreenState extends State<ThirteenCardPokerScreen> {
   }
 
   List<String> _currentBenchedUsersForTable(List<String> tablePlayers) {
+    if (widget.gameType == '13 МОДНЫ ПОКЕР' &&
+        !_tableSplitSelected &&
+        tablePlayers.length >= 5 &&
+        tablePlayers.length <= 7) {
+      return tablePlayers
+          .skip(4)
+          .where((userId) => !_isEliminatedByScore(userId))
+          .toList();
+    }
+
     final benchCount = _benchCountForTable(tablePlayers);
     if (benchCount <= 0) return <String>[];
 
@@ -585,6 +640,141 @@ class _PlayingTableScreenState extends State<ThirteenCardPokerScreen> {
     _setPreferredBenchedUsersForCurrentTable(
       sortedByRoundScore.take(benchCount).toList(),
     );
+  }
+
+  /// Applies the 5-7 player tournament movement after every committed round.
+  /// Previously benched players must return to Н1-Н4 on the next round and can
+  /// never remain in the Ш zone twice in a row.
+  void _applyTournamentMovement7Players() {
+    if (widget.gameType != '13 МОДНЫ ПОКЕР') return;
+    if (_tableSplitSelected) return;
+    final int total = _orderedUserNames.length;
+    if (total < 5 || total > 7) return;
+
+    const int shStart = 4;
+    final int shEnd = total - 1;
+    final originalBlocks = List<String>.from(_orderedUserNames);
+    final nextBlocks = List<String?>.filled(total, null);
+
+    final existingRedShIndices = <int>[];
+    final aliveShPlayers = <String>[];
+    for (int i = shStart; i <= shEnd; i++) {
+      final userId = originalBlocks[i];
+      if (_isEliminatedByScore(userId)) {
+        existingRedShIndices.add(i);
+      } else {
+        aliveShPlayers.add(userId);
+      }
+    }
+
+    final newlyEliminatedNs = [
+      for (int i = 0; i <= 3; i++)
+        if (_isEliminatedByScore(originalBlocks[i]) &&
+            !_uRankings.containsKey(originalBlocks[i]))
+          originalBlocks[i],
+    ]..sort((a, b) {
+        final byTotal = (_totalScores[b] ?? 0).compareTo(_totalScores[a] ?? 0);
+        if (byTotal != 0) return byTotal;
+        return (_roundScores[b] ?? 0).compareTo(_roundScores[a] ?? 0);
+      });
+
+    for (final userId in newlyEliminatedNs) {
+      _uRankings[userId] = _uRankings.length + 1;
+    }
+
+    final assignedEliminationSlots = <String, int>{};
+    final occupiedShIndices = <int>{...existingRedShIndices};
+    for (final userId in newlyEliminatedNs) {
+      for (int i = shEnd; i >= shStart; i--) {
+        if (occupiedShIndices.contains(i)) continue;
+        occupiedShIndices.add(i);
+        assignedEliminationSlots[userId] = i;
+        break;
+      }
+    }
+
+    for (final i in existingRedShIndices) {
+      nextBlocks[i] = originalBlocks[i];
+    }
+    assignedEliminationSlots.forEach((userId, slotIndex) {
+      nextBlocks[slotIndex] = userId;
+    });
+
+    final aliveCount =
+        originalBlocks.where((userId) => !_isEliminatedByScore(userId)).length;
+    final nextBenchCount = aliveCount <= 4 ? 0 : aliveCount - 4;
+
+    final rankedAliveNs = [
+      for (int i = 0; i <= 3; i++)
+        if (!_isEliminatedByScore(originalBlocks[i])) originalBlocks[i],
+    ]..sort((a, b) {
+        final byRound = (_roundScores[a] ?? 0).compareTo(_roundScores[b] ?? 0);
+        if (byRound != 0) return byRound;
+        return originalBlocks.indexOf(a).compareTo(originalBlocks.indexOf(b));
+      });
+
+    final promotedNs = rankedAliveNs.take(nextBenchCount).toList();
+    final promotedNSet = promotedNs.toSet();
+    final remainingIncomingFromSh =
+        aliveShPlayers.skip(promotedNs.length).toList();
+    final remainingNs = rankedAliveNs
+        .where((userId) => !promotedNSet.contains(userId))
+        .toList();
+
+    final freeBenchIndices = [
+      for (int i = shStart; i <= shEnd; i++)
+        if (!occupiedShIndices.contains(i)) i,
+    ];
+    final pairedIncomingByNIndex = <int, String>{};
+    final promotedCount = promotedNs.length < freeBenchIndices.length
+        ? promotedNs.length
+        : freeBenchIndices.length;
+
+    for (int i = 0; i < promotedCount; i++) {
+      final promotedUser = promotedNs[i];
+      final targetShIndex = freeBenchIndices[i];
+      nextBlocks[targetShIndex] = promotedUser;
+
+      if (i < aliveShPlayers.length) {
+        final promotedNIndex = originalBlocks.indexOf(promotedUser);
+        pairedIncomingByNIndex[promotedNIndex] = aliveShPlayers[i];
+      }
+    }
+
+    for (int i = 0; i <= 3; i++) {
+      final userId = originalBlocks[i];
+      final movedToSh = assignedEliminationSlots.containsKey(userId);
+      if (_isEliminatedByScore(userId) && !movedToSh) {
+        nextBlocks[i] = userId;
+        continue;
+      }
+
+      final pairedIncoming = pairedIncomingByNIndex[i];
+      if (pairedIncoming != null) {
+        nextBlocks[i] = pairedIncoming;
+        continue;
+      }
+
+      if (remainingIncomingFromSh.isNotEmpty) {
+        nextBlocks[i] = remainingIncomingFromSh.removeAt(0);
+        continue;
+      }
+
+      if (remainingNs.isNotEmpty) {
+        nextBlocks[i] = remainingNs.removeAt(0);
+      }
+    }
+
+    _orderedUserNames = nextBlocks.map((userId) => userId ?? '').toList();
+    _refreshDisplayNamesFromProfiles();
+
+    _setPreferredBenchedUsersForCurrentTable([
+      for (int i = shStart; i <= shEnd; i++)
+        if (i < _orderedUserNames.length &&
+            _orderedUserNames[i].isNotEmpty &&
+            !_isEliminatedByScore(_orderedUserNames[i]))
+          _orderedUserNames[i],
+    ]);
   }
 
   void _updateBoltModeForNextRound() {
@@ -688,6 +878,7 @@ class _PlayingTableScreenState extends State<ThirteenCardPokerScreen> {
     _winsByUserId.clear();
     _forcedEliminatedUserIds.clear();
     _benchedUserIds.clear();
+    _uRankings.clear();
     _table1BenchedUserIds.clear();
     _table2BenchedUserIds.clear();
     _pinnedSubstituteUserIds.clear();
@@ -716,6 +907,307 @@ class _PlayingTableScreenState extends State<ThirteenCardPokerScreen> {
         _sessionAllUserIds.add(userId);
       }
     }
+  }
+
+  Future<void> _tryRestoreSavedSession() async {
+    final id = widget.initialSavedSessionId;
+    if (id == null || id.isEmpty) return;
+
+    final saved = await _savedSessionsRepo.findById(id);
+    if (!mounted || saved == null || saved.gameKey != '13_card_poker') {
+      return;
+    }
+
+    final payload = saved.payload;
+    final restoredUserNames =
+        (payload['userNames'] as List<dynamic>? ?? const [])
+            .whereType<String>()
+            .toList(growable: false);
+    final restoredOrderedUserNames =
+        (payload['orderedUserNames'] as List<dynamic>? ?? const [])
+            .whereType<String>()
+            .toList(growable: false);
+    if (restoredUserNames.isEmpty || restoredOrderedUserNames.isEmpty) return;
+
+    final scoreInputs = Map<String, dynamic>.from(
+      payload['scoreInputs'] as Map? ?? const {},
+    );
+    final restoredScoreControllers = <String, TextEditingController>{};
+    final restoredScoreFocusNodes = <String, FocusNode>{};
+    for (final userId in scoreInputs.keys) {
+      restoredScoreControllers[userId] = TextEditingController(
+        text: (scoreInputs[userId] as String? ?? '').trim(),
+      );
+      restoredScoreFocusNodes[userId] = FocusNode();
+    }
+
+    for (final controller in _scoreControllers.values) {
+      controller.dispose();
+    }
+    for (final focusNode in _scoreFocusNodes.values) {
+      focusNode.dispose();
+    }
+
+    final eighthInputs =
+        (payload['eighthBlockInputs'] as List<dynamic>? ?? const [])
+            .map((value) => (value as String? ?? '').trim())
+            .toList(growable: false);
+
+    if (!mounted) return;
+    setState(() {
+      _activeSavedSessionId = id;
+      currentTable = (payload['currentTable'] as num?)?.toInt() ?? currentTable;
+      userNames = restoredUserNames;
+      displayNames = (payload['displayNames'] as List<dynamic>? ?? const [])
+          .whereType<String>()
+          .toList();
+      _orderedUserNames = restoredOrderedUserNames;
+      _orderedDisplayNames =
+          (payload['orderedDisplayNames'] as List<dynamic>? ?? const [])
+              .whereType<String>()
+              .toList();
+      _table1UserNames =
+          (payload['table1UserNames'] as List<dynamic>? ?? const [])
+              .whereType<String>()
+              .toList();
+      _table1DisplayNames =
+          (payload['table1DisplayNames'] as List<dynamic>? ?? const [])
+              .whereType<String>()
+              .toList();
+      _table2UserNames =
+          (payload['table2UserNames'] as List<dynamic>? ?? const [])
+              .whereType<String>()
+              .toList();
+      _table2DisplayNames =
+          (payload['table2DisplayNames'] as List<dynamic>? ?? const [])
+              .whereType<String>()
+              .toList();
+      _userProfiles
+        ..clear()
+        ..addAll(
+          Map<String, dynamic>.from(payload['userProfiles'] as Map? ?? const {})
+              .map(
+            (key, value) => MapEntry(
+              key,
+              value is Map<String, dynamic>
+                  ? value
+                  : Map<String, dynamic>.from(value as Map),
+            ),
+          ),
+        );
+      playerCount = (payload['playerCount'] as num?)?.toInt() ?? playerCount;
+      roundNumber = (payload['roundNumber'] as num?)?.toInt() ?? roundNumber;
+      _scoreLimit = (payload['scoreLimit'] as num?)?.toInt() ?? _scoreLimit;
+      _betAmount = (payload['betAmount'] as num?)?.toInt() ?? _betAmount;
+      _boltScoreLimit =
+          (payload['boltScoreLimit'] as num?)?.toInt() ?? _boltScoreLimit;
+      _boltBetAmount =
+          (payload['boltBetAmount'] as num?)?.toInt() ?? _boltBetAmount;
+      _playerOrderSelected =
+          payload['playerOrderSelected'] as bool? ?? _playerOrderSelected;
+      _tableSplitSelected =
+          payload['tableSplitSelected'] as bool? ?? _tableSplitSelected;
+      _roundScores
+        ..clear()
+        ..addAll(
+          Map<String, dynamic>.from(payload['roundScores'] as Map? ?? const {})
+              .map((key, value) => MapEntry(key, (value as num).toInt())),
+        );
+      _totalScores
+        ..clear()
+        ..addAll(
+          Map<String, dynamic>.from(payload['totalScores'] as Map? ?? const {})
+              .map((key, value) => MapEntry(key, (value as num).toInt())),
+        );
+      _winsByUserId
+        ..clear()
+        ..addAll(Map<String, dynamic>.from(
+          payload['winsByUserId'] as Map? ?? const {},
+        ).map((key, value) => MapEntry(key, (value as num).toInt())));
+      _moneyByUserId
+        ..clear()
+        ..addAll(Map<String, dynamic>.from(
+          payload['moneyByUserId'] as Map? ?? const {},
+        ).map((key, value) => MapEntry(key, (value as num).toInt())));
+      _scoreControllers
+        ..clear()
+        ..addAll(restoredScoreControllers);
+      _scoreFocusNodes
+        ..clear()
+        ..addAll(restoredScoreFocusNodes);
+      for (var i = 0; i < _eighthBlockScoreControllers.length; i++) {
+        _eighthBlockScoreControllers[i].text =
+            i < eighthInputs.length ? eighthInputs[i] : '';
+      }
+      _eighthRoundScoresByUserId
+        ..clear()
+        ..addAll(Map<String, dynamic>.from(
+          payload['eighthRoundScoresByUserId'] as Map? ?? const {},
+        ).map((key, value) => MapEntry(key, (value as num).toInt())));
+      _explicitZeroRoundUserIds
+        ..clear()
+        ..addAll(
+            (payload['explicitZeroRoundUserIds'] as List<dynamic>? ?? const [])
+                .whereType<String>());
+      _forcedEliminatedUserIds
+        ..clear()
+        ..addAll(
+            (payload['forcedEliminatedUserIds'] as List<dynamic>? ?? const [])
+                .whereType<String>());
+      _uRankings
+        ..clear()
+        ..addAll((payload['uRankings'] as Map? ?? const {}).map(
+          (k, v) => MapEntry(k as String, (v as num).toInt()),
+        ));
+      _paidOutRoundLoserUserIds
+        ..clear()
+        ..addAll(
+            (payload['paidOutRoundLoserUserIds'] as List<dynamic>? ?? const [])
+                .whereType<String>());
+      _isResolvingRound = payload['isResolvingRound'] as bool? ?? false;
+      _isSubmittingInlineScore =
+          payload['isSubmittingInlineScore'] as bool? ?? false;
+      _isProcessingEighthSubmit =
+          payload['isProcessingEighthSubmit'] as bool? ?? false;
+      _sessionAddedToStatistics =
+          payload['sessionAddedToStatistics'] as bool? ?? false;
+      _benchedUserIds
+        ..clear()
+        ..addAll((payload['benchedUserIds'] as List<dynamic>? ?? const [])
+            .whereType<String>());
+      _table1BenchedUserIds
+        ..clear()
+        ..addAll((payload['table1BenchedUserIds'] as List<dynamic>? ?? const [])
+            .whereType<String>());
+      _table2BenchedUserIds
+        ..clear()
+        ..addAll((payload['table2BenchedUserIds'] as List<dynamic>? ?? const [])
+            .whereType<String>());
+      _pinnedSubstituteUserIds
+        ..clear()
+        ..addAll(
+            (payload['pinnedSubstituteUserIds'] as List<dynamic>? ?? const [])
+                .whereType<String>());
+      _table1PinnedSubstituteUserIds
+        ..clear()
+        ..addAll((payload['table1PinnedSubstituteUserIds'] as List<dynamic>? ??
+                const [])
+            .whereType<String>());
+      _table2PinnedSubstituteUserIds
+        ..clear()
+        ..addAll((payload['table2PinnedSubstituteUserIds'] as List<dynamic>? ??
+                const [])
+            .whereType<String>());
+      _isBoltMode = payload['isBoltMode'] as bool? ?? false;
+      _boltRoundNumber =
+          (payload['boltRoundNumber'] as num?)?.toInt() ?? _boltRoundNumber;
+      _middleTieDecisionMade =
+          payload['middleTieDecisionMade'] as bool? ?? false;
+      _currentBoltUserId = payload['currentBoltUserId'] as String?;
+      _completedBoltUserIds
+        ..clear()
+        ..addAll((payload['completedBoltUserIds'] as List<dynamic>? ?? const [])
+            .whereType<String>());
+      _sessionAllUserIds
+        ..clear()
+        ..addAll((payload['sessionAllUserIds'] as List<dynamic>? ?? const [])
+            .whereType<String>());
+      _sessionInitialPlayerCount =
+          (payload['sessionInitialPlayerCount'] as num?)?.toInt() ??
+              _sessionInitialPlayerCount;
+      _sessionAddedPlayers =
+          (payload['sessionAddedPlayers'] as num?)?.toInt() ??
+              _sessionAddedPlayers;
+      _sessionRemovedPlayers =
+          (payload['sessionRemovedPlayers'] as num?)?.toInt() ??
+              _sessionRemovedPlayers;
+      _sessionOrdinaryRounds =
+          (payload['sessionOrdinaryRounds'] as num?)?.toInt() ??
+              _sessionOrdinaryRounds;
+      _sessionBoltRounds =
+          (payload['sessionBoltRounds'] as num?)?.toInt() ?? _sessionBoltRounds;
+      _sessionMiddleBoltRounds =
+          (payload['sessionMiddleBoltRounds'] as num?)?.toInt() ??
+              _sessionMiddleBoltRounds;
+      _currentRegistrarUserId = payload['currentRegistrarUserId'] as String? ??
+          _currentRegistrarUserId;
+    });
+  }
+
+  Future<void> _saveProgress() async {
+    final sessionId = await _savedSessionsRepo.saveOrUpdate(
+      sessionId: _activeSavedSessionId,
+      gameKey: '13_card_poker',
+      gameLabel: widget.gameType,
+      selectedUserIds: List<String>.from(_orderedUserNames),
+      payload: {
+        'currentTable': currentTable,
+        'userNames': userNames,
+        'displayNames': displayNames,
+        'orderedUserNames': _orderedUserNames,
+        'orderedDisplayNames': _orderedDisplayNames,
+        'table1UserNames': _table1UserNames,
+        'table1DisplayNames': _table1DisplayNames,
+        'table2UserNames': _table2UserNames,
+        'table2DisplayNames': _table2DisplayNames,
+        'userProfiles': _userProfiles,
+        'playerCount': playerCount,
+        'roundNumber': roundNumber,
+        'scoreLimit': _scoreLimit,
+        'betAmount': _betAmount,
+        'boltScoreLimit': _boltScoreLimit,
+        'boltBetAmount': _boltBetAmount,
+        'playerOrderSelected': _playerOrderSelected,
+        'tableSplitSelected': _tableSplitSelected,
+        'roundScores': _roundScores,
+        'totalScores': _totalScores,
+        'winsByUserId': _winsByUserId,
+        'moneyByUserId': _moneyByUserId,
+        'scoreInputs': _scoreControllers.map(
+          (key, controller) => MapEntry(key, controller.text),
+        ),
+        'eighthBlockInputs': _eighthBlockScoreControllers
+            .map((controller) => controller.text)
+            .toList(),
+        'eighthRoundScoresByUserId': _eighthRoundScoresByUserId,
+        'explicitZeroRoundUserIds': _explicitZeroRoundUserIds.toList(),
+        'forcedEliminatedUserIds': _forcedEliminatedUserIds.toList(),
+        'paidOutRoundLoserUserIds': _paidOutRoundLoserUserIds.toList(),
+        'uRankings': _uRankings,
+        'isResolvingRound': _isResolvingRound,
+        'isSubmittingInlineScore': _isSubmittingInlineScore,
+        'isProcessingEighthSubmit': _isProcessingEighthSubmit,
+        'sessionAddedToStatistics': _sessionAddedToStatistics,
+        'benchedUserIds': _benchedUserIds,
+        'table1BenchedUserIds': _table1BenchedUserIds,
+        'table2BenchedUserIds': _table2BenchedUserIds,
+        'pinnedSubstituteUserIds': _pinnedSubstituteUserIds,
+        'table1PinnedSubstituteUserIds': _table1PinnedSubstituteUserIds,
+        'table2PinnedSubstituteUserIds': _table2PinnedSubstituteUserIds,
+        'isBoltMode': _isBoltMode,
+        'boltRoundNumber': _boltRoundNumber,
+        'middleTieDecisionMade': _middleTieDecisionMade,
+        'currentBoltUserId': _currentBoltUserId,
+        'completedBoltUserIds': _completedBoltUserIds.toList(),
+        'sessionAllUserIds': _sessionAllUserIds,
+        'sessionInitialPlayerCount': _sessionInitialPlayerCount,
+        'sessionAddedPlayers': _sessionAddedPlayers,
+        'sessionRemovedPlayers': _sessionRemovedPlayers,
+        'sessionOrdinaryRounds': _sessionOrdinaryRounds,
+        'sessionBoltRounds': _sessionBoltRounds,
+        'sessionMiddleBoltRounds': _sessionMiddleBoltRounds,
+        'currentRegistrarUserId': _currentRegistrarUserId,
+      },
+    );
+
+    _activeSavedSessionId = sessionId;
+  }
+
+  Future<void> _removeSavedProgressIfAny() async {
+    final id = _activeSavedSessionId;
+    if (id == null || id.isEmpty) return;
+    await _savedSessionsRepo.removeById(id);
+    _activeSavedSessionId = null;
   }
 
   String _buildSessionReportText() {
@@ -1471,28 +1963,37 @@ class _PlayingTableScreenState extends State<ThirteenCardPokerScreen> {
             ),
           ),
           actions: [
-            TextButton(
+            TextButton.icon(
               onPressed: () async {
                 await _showReportShareActions();
               },
-              child: const Text('Илгээх'),
+              icon: Image.asset(
+                'assets/buttons/send.png',
+                width: 18,
+                height: 18,
+                fit: BoxFit.contain,
+              ),
+              label: const Text('Илгээх'),
             ),
-            TextButton(
+            TextButton.icon(
               onPressed: () async {
                 await _printSessionReport();
               },
-              child: const Text('Хэвлэх'),
+              icon: Image.asset(
+                'assets/buttons/print.png',
+                width: 18,
+                height: 18,
+                fit: BoxFit.contain,
+              ),
+              label: const Text('Хэвлэх'),
             ),
             ElevatedButton(
               onPressed: () async {
                 await _askRegistrarDecisionAtGameEndIfNeeded();
+                await _removeSavedProgressIfAny();
+                await _releaseCurrentActiveTableLockIfAny();
                 Navigator.of(dialogContext).pop();
-                if (!mounted) return;
-                Navigator.of(context).pushAndRemoveUntil(
-                  MaterialPageRoute(
-                      builder: (context) => const PlayerSelectionPage()),
-                  (route) => false,
-                );
+                await _goToPlayerSelectionPage();
               },
               child: const Text('Гарах'),
             ),
@@ -1864,8 +2365,9 @@ class _PlayingTableScreenState extends State<ThirteenCardPokerScreen> {
     setState(() {
       _commitHandScoresToTotals(tablePlayers);
       _applyImmediateLoserMoneyUpdates(tablePlayers);
-      _advanceBenchByRoundScores(tablePlayers);
     });
+
+    await _applyPostCommitMovement(tablePlayers);
 
     final tablePlayersAfterCommit = List<String>.from(_activeUserNames);
     if (_isRoundCompletedFor(tablePlayersAfterCommit)) {
@@ -2047,6 +2549,34 @@ class _PlayingTableScreenState extends State<ThirteenCardPokerScreen> {
       if (score == null) continue;
       _addScoreToTotal(userId, score);
     }
+  }
+
+  Future<void> _applyPostCommitMovement(List<String> tablePlayers) async {
+    if (widget.gameType != '13 МОДНЫ ПОКЕР' ||
+        tablePlayers.length < 5 ||
+        tablePlayers.length > 7) {
+      if (!mounted) return;
+      setState(() {
+        _advanceBenchByRoundScores(tablePlayers);
+        _applyTournamentMovement7Players();
+      });
+      return;
+    }
+
+    final reordered =
+        await _buildSubstitutionReorderForCurrentTable(tablePlayers);
+    if (!mounted) return;
+
+    setState(() {
+      if (reordered != null && reordered.isNotEmpty) {
+        _applyReorderedPlayersForCurrentTable(reordered);
+      }
+
+      // Keep eliminated main player on the same seat when no substitute
+      // slot/candidate is available for replacement.
+      _relocateEliminatedMainPlayersToSubstitutes(_activeUserNames);
+      _advanceBenchByRoundScores(_activeUserNames);
+    });
   }
 
   void _applyImmediateLoserMoneyUpdates(List<String> tablePlayers) {
@@ -2514,10 +3044,19 @@ class _PlayingTableScreenState extends State<ThirteenCardPokerScreen> {
 
   List<String> _arrangePlayersForBoardLayout(
       List<String> playersInSelectedOrder) {
-    // Keep dialog-selected order identical to block order.
-    // Main seats use the first 4 positions, and remaining players are
-    // rendered in substitute slots in the same sequence.
-    return List<String>.from(playersInSelectedOrder);
+    final arranged = List<String>.from(playersInSelectedOrder);
+    // 13-card tournament slots: 1-4 are always N-zone (green/red),
+    // 5..N are Sh-zone (yellow). Move first N-4 selected players to Sh slots.
+    if (widget.gameType == '13 МОДНЫ ПОКЕР' &&
+        arranged.length >= 5 &&
+        arranged.length <= 7) {
+      final yellowCount = arranged.length - 4;
+      return <String>[
+        ...arranged.skip(yellowCount),
+        ...arranged.take(yellowCount),
+      ];
+    }
+    return arranged;
   }
 
   void _applyRoundOrderForCurrentTable(
@@ -2554,6 +3093,19 @@ class _PlayingTableScreenState extends State<ThirteenCardPokerScreen> {
       {bool isInstantSpecialWin = false}) async {
     if (_isResolvingRound || !mounted) return;
     if (!roundPlayers.contains(winnerUserId)) return;
+
+    if (widget.autoReturnOnWinner && !_multiAutoReturnTriggered) {
+      _multiAutoReturnTriggered = true;
+      WidgetsBinding.instance.addPostFrameCallback((_) {
+        if (!mounted) return;
+        Navigator.of(context).pop(<String, dynamic>{
+          'completedGame': '13_card_poker',
+          'winnerUserId': winnerUserId,
+        });
+      });
+      return;
+    }
+
     final wasBoltRound = _isBoltMode;
 
     _isResolvingRound = true;
@@ -2731,8 +3283,9 @@ class _PlayingTableScreenState extends State<ThirteenCardPokerScreen> {
       setState(() {
         _commitHandScoresToTotals(tablePlayersAfterInput);
         _applyImmediateLoserMoneyUpdates(tablePlayersAfterInput);
-        _advanceBenchByRoundScores(tablePlayersAfterInput);
       });
+
+      await _applyPostCommitMovement(tablePlayersAfterInput);
 
       final tablePlayersAfterCommit = List<String>.from(_activeUserNames);
 
@@ -2741,7 +3294,7 @@ class _PlayingTableScreenState extends State<ThirteenCardPokerScreen> {
         return;
       }
 
-      // Seat-rotation/substitute swapping is intentionally disabled.
+      // Hand inputs are reset after post-commit movement is applied.
       setState(() {
         _clearHandScoresForPlayers(List<String>.from(_activeUserNames));
       });
@@ -3028,6 +3581,7 @@ class _PlayingTableScreenState extends State<ThirteenCardPokerScreen> {
     playerCount = _orderedDisplayNames.length;
     _sessionInitialPlayerCount = _orderedUserNames.length;
     _registerSessionUsers(_orderedUserNames);
+    _tryRestoreSavedSession();
   }
 
   @override
@@ -3047,6 +3601,703 @@ class _PlayingTableScreenState extends State<ThirteenCardPokerScreen> {
     super.dispose();
   }
 
+  String? _currentActiveTableLockId() {
+    final routeName = ModalRoute.of(context)?.settings.name;
+    if (routeName == null || !routeName.startsWith('active-table:')) {
+      return null;
+    }
+
+    final lockId = routeName.substring('active-table:'.length).trim();
+    return lockId.isEmpty ? null : lockId;
+  }
+
+  Future<void> _releaseCurrentActiveTableLockIfAny() async {
+    final lockId = _currentActiveTableLockId();
+    if (lockId == null) return;
+
+    try {
+      await _activeTablesRepo.releaseActiveTableLock(lockId);
+    } catch (_) {
+      // Best-effort release. Navigation should still continue.
+    }
+  }
+
+  Future<void> _goToPlayerSelectionPage() async {
+    if (!mounted) return;
+    await Navigator.of(context).pushAndRemoveUntil(
+      MaterialPageRoute(
+        builder: (context) => PlayerSelectionPage(
+          currentUserId: widget.currentRegistrarUserId,
+          canManageGames: widget.canManageGames,
+        ),
+      ),
+      (route) => false,
+    );
+  }
+
+  Future<void> _handleBackFromGameAppBar() async {
+    if (!mounted) return;
+
+    if (Navigator.of(context).canPop()) {
+      Navigator.of(context).pop();
+      return;
+    }
+
+    await Navigator.of(context).pushReplacement(
+      MaterialPageRoute(
+        builder: (context) => KindsOfGamePage(
+          selectedUserIds: List<String>.from(_orderedUserNames),
+          playingFormat: widget.multiWinsByUserId != null ? 'multi' : 'single',
+        ),
+      ),
+    );
+  }
+
+  Future<void> _showExitDecisionDialog() async {
+    final action = await showDialog<String>(
+      context: context,
+      barrierDismissible: false,
+      builder: (dialogContext) {
+        return AlertDialog(
+          title: const Text('Тоглолтоос гарах'),
+          content: const Text('Гарахаас өмнө одоогийн тоглолтыг хадгалах уу?'),
+          actions: [
+            TextButton(
+              onPressed: () => Navigator.of(dialogContext).pop('cancel'),
+              child: const Text('Болих'),
+            ),
+            TextButton(
+              onPressed: () => Navigator.of(dialogContext).pop('no_save'),
+              child: const Text('Үгүй'),
+            ),
+            ElevatedButton(
+              onPressed: () => Navigator.of(dialogContext).pop('save'),
+              child: const Text('Тийм'),
+            ),
+          ],
+        );
+      },
+    );
+
+    if (!mounted || action == null || action == 'cancel') return;
+
+    if (action == 'save') {
+      await _saveProgress();
+      await _releaseCurrentActiveTableLockIfAny();
+      await _goToPlayerSelectionPage();
+      return;
+    }
+
+    await _showSessionSummaryDialog();
+  }
+
+  Future<void> _showRemovePlayerDialogFromAppBar() async {
+    if (_orderedUserNames.length <= 2) return;
+
+    final maxRemovable = _orderedUserNames.length - 2;
+    final playersForRemove = _tableSplitSelected
+        ? List<String>.from(_activeUserNames)
+        : List<String>.from(_orderedUserNames);
+    final displayNamesForRemove = _tableSplitSelected
+        ? List<String>.from(_activeDisplayNames)
+        : List<String>.from(_orderedDisplayNames);
+
+    await showPlayerRemoveDialog(
+      playersForRemove,
+      displayNamesForRemove,
+      maxRemovable,
+      (removeIndices) {
+        if (removeIndices.isEmpty) return;
+        bool shouldAskBelowEightDecision = false;
+        Set<String> removedUserIds = <String>{};
+        setState(() {
+          final previousPlayerCount = _orderedUserNames.length;
+          removedUserIds =
+              removeIndices.map((i) => playersForRemove[i]).toSet();
+          for (final removedUserId in removedUserIds) {
+            _roundScores.remove(removedUserId);
+            _explicitZeroRoundUserIds.remove(removedUserId);
+            _totalScores.remove(removedUserId);
+            _winsByUserId.remove(removedUserId);
+            _completedBoltUserIds.remove(removedUserId);
+            _removeUserFromPinnedSubstitutes(removedUserId);
+            if (_currentBoltUserId == removedUserId) {
+              _currentBoltUserId = null;
+            }
+            _disposeScoreInputFor(removedUserId);
+          }
+          _sessionRemovedPlayers += removedUserIds.length;
+          _registerSessionUsers(removedUserIds);
+          _orderedUserNames = _orderedUserNames
+              .where((u) => !removedUserIds.contains(u))
+              .toList();
+          _refreshDisplayNamesFromProfiles();
+          playerCount = _orderedUserNames.length;
+          if (_tableSplitSelected) {
+            _table1UserNames = _table1UserNames
+                .where((u) => !removedUserIds.contains(u))
+                .toList();
+            _table2UserNames = _table2UserNames
+                .where((u) => !removedUserIds.contains(u))
+                .toList();
+            _refreshDisplayNamesFromProfiles();
+            if (currentTable == 2 && _table2UserNames.isEmpty) {
+              currentTable = 1;
+            } else if (currentTable == 1 &&
+                _table1UserNames.isEmpty &&
+                _table2UserNames.isNotEmpty) {
+              currentTable = 2;
+            }
+            shouldAskBelowEightDecision =
+                previousPlayerCount >= 8 && playerCount < 8;
+          }
+        });
+
+        if (removedUserIds.isNotEmpty) {
+          Future.microtask(
+            () => _activeTablesRepo
+                .releasePlayersFromActiveTables(removedUserIds.toList()),
+          );
+        }
+
+        if (shouldAskBelowEightDecision) {
+          Future.microtask(_showBelowEightSplitDecisionDialog);
+        }
+      },
+    );
+  }
+
+  Future<void> _addPlayerFromAppBar() async {
+    if (playerCount >= 14) return;
+
+    final selectedToAdd = await Navigator.push<List<String>>(
+      context,
+      MaterialPageRoute(
+        builder: (context) => PlayerSelectionPage(
+          isAddingMode: true,
+          excludedUserIds: _orderedUserNames,
+        ),
+      ),
+    );
+
+    if (selectedToAdd == null || selectedToAdd.isEmpty) return;
+
+    setState(() {
+      final addedNow = <String>[];
+      for (final userId in selectedToAdd) {
+        if (_orderedUserNames.length >= 14) break;
+        if (_orderedUserNames.contains(userId)) continue;
+        _orderedUserNames.add(userId);
+        addedNow.add(userId);
+      }
+      if (addedNow.isNotEmpty) {
+        _sessionAddedPlayers += addedNow.length;
+        _registerSessionUsers(addedNow);
+      }
+      _refreshDisplayNamesFromProfiles();
+      playerCount = _orderedUserNames.length;
+      if (playerCount > 7) {
+        _tableSplitSelected = false;
+      }
+      _disposeDetachedScoreInputs();
+    });
+    _loadUserProfilesByIds(selectedToAdd);
+  }
+
+  Future<void> _showTableSettingsDialog() async {
+    final scoreController = TextEditingController(text: _scoreLimit.toString());
+    final betController = TextEditingController(text: _betAmount.toString());
+    final boltScoreController =
+        TextEditingController(text: _boltScoreLimit.toString());
+    final boltBetController =
+        TextEditingController(text: _boltBetAmount.toString());
+
+    await showDialog<void>(
+      context: context,
+      builder: (context) {
+        return AlertDialog(
+          title: const Text('Тоглох ширээний тохиргоо'),
+          content: SingleChildScrollView(
+            child: Column(
+              mainAxisSize: MainAxisSize.min,
+              crossAxisAlignment: CrossAxisAlignment.start,
+              children: [
+                const Text(
+                  'Энгийн тоглолт',
+                  style: TextStyle(fontWeight: FontWeight.bold),
+                ),
+                const SizedBox(height: 8),
+                TextField(
+                  controller: scoreController,
+                  keyboardType: TextInputType.number,
+                  decoration: const InputDecoration(
+                    labelText: 'Онооны хязгаар',
+                  ),
+                ),
+                const SizedBox(height: 12),
+                TextField(
+                  controller: betController,
+                  keyboardType: TextInputType.number,
+                  decoration: const InputDecoration(
+                    labelText: 'Бооцооны дүн',
+                  ),
+                ),
+                const SizedBox(height: 18),
+                const Text(
+                  'Боолт тоглолт',
+                  style: TextStyle(fontWeight: FontWeight.bold),
+                ),
+                const SizedBox(height: 8),
+                TextField(
+                  controller: boltScoreController,
+                  keyboardType: TextInputType.number,
+                  decoration: const InputDecoration(
+                    labelText: 'Боолт үеийн онооны хязгаар',
+                  ),
+                ),
+                const SizedBox(height: 12),
+                TextField(
+                  controller: boltBetController,
+                  keyboardType: TextInputType.number,
+                  decoration: const InputDecoration(
+                    labelText: 'Боолт үеийн бооцооны дүн',
+                  ),
+                ),
+              ],
+            ),
+          ),
+          actions: [
+            TextButton(
+              onPressed: () {
+                Navigator.of(context).pop();
+              },
+              child: const Text('Болих'),
+            ),
+            ElevatedButton(
+              onPressed: () {
+                setState(() {
+                  final nextScore = int.tryParse(scoreController.text);
+                  final nextBet = int.tryParse(betController.text);
+                  final nextBoltScore = int.tryParse(boltScoreController.text);
+                  final nextBoltBet = int.tryParse(boltBetController.text);
+
+                  if (nextScore != null && nextScore > 0) {
+                    _scoreLimit = nextScore;
+                  }
+                  if (nextBet != null && nextBet > 0) {
+                    _betAmount = nextBet;
+                  }
+                  if (nextBoltScore != null && nextBoltScore > 0) {
+                    _boltScoreLimit = nextBoltScore;
+                  }
+                  if (nextBoltBet != null && nextBoltBet > 0) {
+                    _boltBetAmount = nextBoltBet;
+                  }
+                });
+                Navigator.of(context).pop();
+              },
+              child: const Text('Хадгалах'),
+            ),
+          ],
+        );
+      },
+    );
+
+    scoreController.dispose();
+    betController.dispose();
+    boltScoreController.dispose();
+    boltBetController.dispose();
+  }
+
+  Future<void> _openNewActiveTableSelection() async {
+    await _persistCurrentActiveTableState();
+    if (!mounted) return;
+
+    final lockedUserIds =
+        await _activeTablesRepo.watchActivePlayerUserIds().first;
+    if (!mounted) return;
+
+    final selected = await Navigator.push<List<String>>(
+      context,
+      MaterialPageRoute(
+        builder: (context) => PlayerSelectionPage(
+          isAddingMode: true,
+          excludedUserIds: lockedUserIds.toList(),
+          currentUserId: widget.currentRegistrarUserId,
+          canManageGames: widget.canManageGames,
+        ),
+      ),
+    );
+
+    if (!mounted || selected == null || selected.isEmpty) return;
+
+    await Navigator.push(
+      context,
+      MaterialPageRoute(
+        builder: (context) => PlayingFormatPage(
+          selectedUserIds: selected,
+          currentUserId: widget.currentRegistrarUserId,
+          canManageGames: widget.canManageGames,
+        ),
+      ),
+    );
+  }
+
+  Future<void> _jumpToActiveTable(ActiveTableSummary table) async {
+    try {
+      final routeName = 'active-table:${table.id}';
+      final currentRouteName = ModalRoute.of(context)?.settings.name;
+      if (currentRouteName == routeName) return;
+
+      await _persistCurrentActiveTableState();
+      if (!mounted) return;
+
+      if (!ActiveTableRouteRegistry.contains(routeName)) {
+        await _reopenActiveTableRoute(table.id);
+        return;
+      }
+
+      Navigator.of(context)
+          .popUntil((route) => route.settings.name == routeName);
+    } catch (_) {
+      if (!mounted) return;
+      ScaffoldMessenger.of(context).showSnackBar(
+        const SnackBar(
+          content: Text('Ширээ солих үед алдаа гарлаа. Дахин оролдоно уу.'),
+        ),
+      );
+    }
+  }
+
+  Future<void> _persistCurrentActiveTableState() async {
+    final currentRouteName = ModalRoute.of(context)?.settings.name;
+    if (currentRouteName == null ||
+        !currentRouteName.startsWith('active-table:')) {
+      return;
+    }
+
+    final lockId = currentRouteName.substring('active-table:'.length).trim();
+    if (lockId.isEmpty) return;
+
+    try {
+      await _saveProgress();
+    } catch (_) {
+      // Local save failure should not block table switching.
+    }
+    if (!mounted) return;
+
+    final orderedIds = _orderedUserNames
+        .map((e) => e.trim())
+        .where((e) => e.isNotEmpty)
+        .toList(growable: false);
+
+    try {
+      await _activeTablesRepo
+          .updateActiveTableState(
+            lockId,
+            savedSessionId: _activeSavedSessionId,
+            playerUserIds: orderedIds.isEmpty ? null : orderedIds,
+          )
+          .timeout(const Duration(seconds: 2));
+    } catch (_) {
+      // Remote sync failures are tolerated; local session is already persisted.
+    }
+  }
+
+  Future<bool> _reopenActiveTableRoute(String lockId) async {
+    final details = await _activeTablesRepo.fetchActiveTableDetails(lockId);
+    if (!mounted || details == null || details.status != 'active') {
+      ScaffoldMessenger.of(context).showSnackBar(
+        const SnackBar(content: Text('Энэ ширээ идэвхгүй болсон байна.')),
+      );
+      return false;
+    }
+
+    String? resolvedSavedSessionId = details.savedSessionId;
+    if (resolvedSavedSessionId == null || resolvedSavedSessionId.isEmpty) {
+      final latest = await _savedSessionsRepo.findLatestByGameAndPlayers(
+        gameKey: details.gameKey,
+        selectedUserIds: details.playerUserIds,
+      );
+      resolvedSavedSessionId = latest?.id;
+      if (resolvedSavedSessionId != null && resolvedSavedSessionId.isNotEmpty) {
+        // Best-effort backfill so next reopen can use the lock directly.
+        _activeTablesRepo.updateSavedSessionId(
+          lockId,
+          resolvedSavedSessionId,
+        );
+      }
+    }
+
+    final page = _buildPageForActiveTable(
+      details,
+      initialSavedSessionId: resolvedSavedSessionId,
+    );
+    if (page == null) {
+      ScaffoldMessenger.of(context).showSnackBar(
+        const SnackBar(
+          content: Text('Энэ ширээний тоглоомыг дахин нээх боломжгүй байна.'),
+        ),
+      );
+      return false;
+    }
+
+    final routeName = 'active-table:${details.id}';
+    await Navigator.push(
+      context,
+      MaterialPageRoute(
+        settings: RouteSettings(name: routeName),
+        builder: (_) => ActiveTableRouteScope(
+          routeName: routeName,
+          child: page,
+        ),
+      ),
+    );
+    return true;
+  }
+
+  Widget? _buildPageForActiveTable(
+    ActiveTableDetails details, {
+    String? initialSavedSessionId,
+  }) {
+    final ids = List<String>.from(details.playerUserIds);
+    final isMulti = details.playingFormat == 'multi';
+    final restoredSessionId = initialSavedSessionId ?? details.savedSessionId;
+
+    switch (details.gameKey) {
+      case '13_card_poker':
+        return ThirteenCardPokerScreen(
+          gameType: '13 МОДНЫ ПОКЕР',
+          selectedUserIds: ids,
+          currentRegistrarUserId: widget.currentRegistrarUserId,
+          canManageGames: widget.canManageGames,
+          initialSavedSessionId: restoredSessionId,
+          autoReturnOnWinner: isMulti,
+          multiWinsByUserId: isMulti ? const <String, int>{} : null,
+          promptInitialPlayerOrder: false,
+        );
+      case 'card_texas':
+        return CardTexasPage(
+          selectedUserIds: ids,
+          currentUserId: widget.currentRegistrarUserId,
+          canManageGames: widget.canManageGames,
+          initialSavedSessionId: restoredSessionId,
+          autoReturnOnWinner: isMulti,
+          multiWinsByUserId: isMulti ? const <String, int>{} : null,
+        );
+      case 'muushig':
+        return MuushigPage(
+          selectedUserIds: ids,
+          currentUserId: widget.currentRegistrarUserId,
+          canManageGames: widget.canManageGames,
+          initialSavedSessionId: restoredSessionId,
+          autoReturnOnWinner: isMulti,
+          multiWinsByUserId: isMulti ? const <String, int>{} : null,
+        );
+      case 'buur':
+        return BuurPage(
+          selectedUserIds: ids,
+          currentUserId: widget.currentRegistrarUserId,
+          canManageGames: widget.canManageGames,
+          initialSavedSessionId: restoredSessionId,
+          autoReturnOnWinner: isMulti,
+          multiWinsByUserId: isMulti ? const <String, int>{} : null,
+        );
+      case 'game108':
+        return Game108Page(
+          selectedUserIds: ids,
+          currentUserId: widget.currentRegistrarUserId,
+          canManageGames: widget.canManageGames,
+          initialSavedSessionId: restoredSessionId,
+          autoReturnOnWinner: isMulti,
+          multiWinsByUserId: isMulti ? const <String, int>{} : null,
+        );
+      case 'xodrox':
+        return HodrokhPage(
+          selectedUserIds: ids,
+          currentUserId: widget.currentRegistrarUserId,
+          canManageGames: widget.canManageGames,
+          initialSavedSessionId: restoredSessionId,
+          autoReturnOnWinner: isMulti,
+          multiWinsByUserId: isMulti ? const <String, int>{} : null,
+        );
+      case 'nvx_shaxax':
+        return NyxShaxaxPage(
+          selectedUserIds: ids,
+          currentUserId: widget.currentRegistrarUserId,
+          canManageGames: widget.canManageGames,
+          initialSavedSessionId: restoredSessionId,
+          autoReturnOnWinner: isMulti,
+          multiWinsByUserId: isMulti ? const <String, int>{} : null,
+        );
+      case 'durak':
+        return DurakPage(
+          selectedUserIds: ids,
+          playingFormat: details.playingFormat,
+          currentUserId: widget.currentRegistrarUserId,
+          canManageGames: widget.canManageGames,
+          initialSavedSessionId: restoredSessionId,
+          multiWinsByUserId: isMulti ? const <String, int>{} : null,
+        );
+      case 'game501':
+        return Game501Page(
+          selectedUserIds: ids,
+          currentUserId: widget.currentRegistrarUserId,
+          canManageGames: widget.canManageGames,
+          initialSavedSessionId: restoredSessionId,
+          autoReturnOnWinner: isMulti,
+          multiWinsByUserId: isMulti ? const <String, int>{} : null,
+        );
+      case 'canasta':
+        return CanastaPage(
+          selectedUserIds: ids,
+          playingFormat: details.playingFormat,
+          currentUserId: widget.currentRegistrarUserId,
+          canManageGames: widget.canManageGames,
+          initialSavedSessionId: restoredSessionId,
+        );
+      default:
+        return null;
+    }
+  }
+
+  BoxDecoration _inlineActiveTableDecoration(
+    ActiveTableSummary table,
+    bool isCurrent,
+  ) {
+    final border = Border.all(
+      color: isCurrent ? const Color(0xFF111111) : Colors.white,
+      width: isCurrent ? 3 : 1.5,
+    );
+
+    switch (table.playingFormat) {
+      case 'multi':
+        return BoxDecoration(
+          shape: BoxShape.circle,
+          border: border,
+          gradient: const LinearGradient(
+            begin: Alignment.topLeft,
+            end: Alignment.bottomRight,
+            colors: <Color>[
+              Color(0xFFE53935),
+              Color(0xFFFB8C00),
+              Color(0xFFFDD835),
+              Color(0xFF43A047),
+              Color(0xFF1E88E5),
+              Color(0xFF8E24AA),
+            ],
+          ),
+          boxShadow: const [
+            BoxShadow(
+              color: Color(0x33000000),
+              blurRadius: 6,
+              offset: Offset(0, 2),
+            ),
+          ],
+        );
+      case 'crazy':
+        return BoxDecoration(
+          shape: BoxShape.circle,
+          border: border,
+          gradient: const LinearGradient(
+            begin: Alignment.topCenter,
+            end: Alignment.bottomCenter,
+            colors: <Color>[
+              Color(0xFFFFC107),
+              Color(0xFFFF7043),
+              Color(0xFFE65100),
+            ],
+          ),
+          boxShadow: const [
+            BoxShadow(
+              color: Color(0x33FF7043),
+              blurRadius: 8,
+              offset: Offset(0, 2),
+            ),
+          ],
+        );
+      default:
+        return BoxDecoration(
+          shape: BoxShape.circle,
+          border: border,
+          color: const Color(0xFF1E88E5),
+          boxShadow: const [
+            BoxShadow(
+              color: Color(0x33000000),
+              blurRadius: 6,
+              offset: Offset(0, 2),
+            ),
+          ],
+        );
+    }
+  }
+
+  Widget _buildInlineActiveTableControls() {
+    return StreamBuilder<List<ActiveTableSummary>>(
+      stream: _activeTablesRepo.watchActiveTableSummaries(),
+      builder: (context, snapshot) {
+        final tables = snapshot.data ?? const <ActiveTableSummary>[];
+        final currentRouteName = ModalRoute.of(context)?.settings.name;
+        return Row(
+          children: [
+            for (final table in tables)
+              Padding(
+                padding: const EdgeInsets.only(right: 8),
+                child: Tooltip(
+                  message: 'Ширээ ${table.tableNumber}: ${table.gameName}',
+                  child: InkWell(
+                    customBorder: const CircleBorder(),
+                    onTap: () => _jumpToActiveTable(table),
+                    child: Container(
+                      width: 36,
+                      height: 36,
+                      alignment: Alignment.center,
+                      decoration: _inlineActiveTableDecoration(
+                        table,
+                        currentRouteName == 'active-table:${table.id}',
+                      ),
+                      child: Text(
+                        '${table.tableNumber}',
+                        style: const TextStyle(
+                          color: Colors.white,
+                          fontWeight: FontWeight.w900,
+                          fontSize: 14,
+                        ),
+                      ),
+                    ),
+                  ),
+                ),
+              ),
+            Tooltip(
+              message: 'Ширээ нэмэх',
+              child: InkWell(
+                customBorder: const CircleBorder(),
+                onTap: _openNewActiveTableSelection,
+                child: Container(
+                  width: 36,
+                  height: 36,
+                  decoration: BoxDecoration(
+                    shape: BoxShape.circle,
+                    color: const Color(0xFF00A86B),
+                    border: Border.all(color: Colors.white, width: 1.5),
+                    boxShadow: const [
+                      BoxShadow(
+                        color: Color(0x33000000),
+                        blurRadius: 6,
+                        offset: Offset(0, 2),
+                      ),
+                    ],
+                  ),
+                  child: const Icon(Icons.add, color: Colors.white, size: 18),
+                ),
+              ),
+            ),
+          ],
+        );
+      },
+    );
+  }
+
   @override
   Widget build(BuildContext context) {
     Color tableBgColor =
@@ -3056,7 +4307,12 @@ class _PlayingTableScreenState extends State<ThirteenCardPokerScreen> {
         _areProfilesLoadedFor(_orderedUserNames);
 
     // Show player order dialog only once at game start, and only for 3-7 players
-    if (!_playerOrderSelected &&
+    // Skip showing dialog if restoring from a saved session
+    final isRestoringFromSavedSession = widget.initialSavedSessionId != null &&
+        widget.initialSavedSessionId!.isNotEmpty;
+    if (widget.promptInitialPlayerOrder &&
+        !_playerOrderSelected &&
+        !isRestoringFromSavedSession &&
         profilesReadyForOrderedUsers &&
         _orderedDisplayNames.length >= 3 &&
         _orderedDisplayNames.length <= 7 &&
@@ -3109,371 +4365,152 @@ class _PlayingTableScreenState extends State<ThirteenCardPokerScreen> {
 
     return Scaffold(
       backgroundColor: tableBgColor,
-      appBar: AppBar(
-        automaticallyImplyLeading: false,
-        title: Row(
-          children: [
-            IconButton(
-              icon: const Icon(Icons.arrow_back),
-              onPressed: () {
-                if (currentTable == 1) {
-                  if (Navigator.of(context).canPop()) {
-                    Navigator.of(context).pop();
-                  } else {
-                    Navigator.of(context).pushReplacement(
-                      MaterialPageRoute(
-                        builder: (context) => KindsOfGamePage(
-                          selectedUserIds: List<String>.from(_orderedUserNames),
-                        ),
-                      ),
-                    );
-                  }
-                } else {
-                  setState(() {
-                    currentTable = 1;
-                  });
-                }
-              },
-            ),
-            const SizedBox(width: 8),
-            Text(
-              widget.gameType,
-              style: const TextStyle(fontWeight: FontWeight.bold),
-            ),
-            const SizedBox(width: 8),
-            ElevatedButton(
-              onPressed: () {
-                setState(() {
-                  currentTable = 1;
-                });
-              },
-              style: ElevatedButton.styleFrom(
-                backgroundColor:
-                    currentTable == 1 ? Colors.blue : Colors.grey[300],
-                foregroundColor:
-                    currentTable == 1 ? Colors.white : Colors.black,
-                minimumSize: const Size(36, 36),
-                padding: const EdgeInsets.symmetric(horizontal: 8),
+      appBar: UnifiedGameAppBar(
+        showGlobalTableBar: true,
+        currentUserId: widget.currentRegistrarUserId,
+        canManageGames: widget.canManageGames,
+        title: SingleChildScrollView(
+          scrollDirection: Axis.horizontal,
+          child: Row(
+            children: [
+              Text(
+                widget.gameType,
+                style: const TextStyle(fontWeight: FontWeight.bold),
               ),
-              child: const Text('Ширээ №1'),
-            ),
-            if (_tableSplitSelected && _table2UserNames.isNotEmpty) ...[
-              const SizedBox(width: 4),
-              ElevatedButton(
-                onPressed: () {
-                  setState(() {
-                    currentTable = 2;
-                  });
-                },
-                style: ElevatedButton.styleFrom(
-                  backgroundColor:
-                      currentTable == 2 ? Colors.blue : Colors.grey[300],
-                  foregroundColor:
-                      currentTable == 2 ? Colors.white : Colors.black,
-                  minimumSize: const Size(36, 36),
-                  padding: const EdgeInsets.symmetric(horizontal: 8),
-                ),
-                child: const Text('Ширээ №2'),
-              ),
-            ],
-            if (_currentRegistrarUserId != null) ...[
-              const SizedBox(width: 8),
-              Tooltip(
-                message:
-                    'Бүртгэл хөтлөгч: ${_displayNameForUserId(_currentRegistrarUserId!, 0)}',
-                child: Row(
-                  children: [
-                    const Icon(Icons.keyboard, size: 18, color: Colors.black87),
-                    const SizedBox(width: 4),
-                    Text(
-                      _displayNameForUserId(_currentRegistrarUserId!, 0),
-                      style: const TextStyle(
-                        fontSize: 12,
-                        fontWeight: FontWeight.w600,
-                      ),
-                    ),
-                  ],
-                ),
-              ),
-            ],
-            const Spacer(),
-            IconButton(
-              icon: Icon(
-                Icons.keyboard,
-                color: _canTransferRegistrarPermission
-                    ? Colors.green.shade700
-                    : Colors.grey,
-              ),
-              onPressed: _canTransferRegistrarPermission
-                  ? _showTransferRegistrarDialog
-                  : null,
-              tooltip: _canTransferRegistrarPermission
-                  ? 'Бүртгэл хөтлөгчийн эрхийг нэг тоглогч руу шилжүүлэх'
-                  : 'Бүртгэл хөтлөгчийн эрх шилжүүлэх боломжгүй',
-            ),
-            ElevatedButton(
-              onPressed: () async {
-                if (_orderedUserNames.length > 2) {
-                  final maxRemovable = _orderedUserNames.length - 2;
-                  final playersForRemove = _tableSplitSelected
-                      ? List<String>.from(_activeUserNames)
-                      : List<String>.from(_orderedUserNames);
-                  final displayNamesForRemove = _tableSplitSelected
-                      ? List<String>.from(_activeDisplayNames)
-                      : List<String>.from(_orderedDisplayNames);
-                  await showPlayerRemoveDialog(
-                    playersForRemove,
-                    displayNamesForRemove,
-                    maxRemovable,
-                    (removeIndices) {
-                      if (removeIndices.isEmpty) return;
-                      bool shouldAskBelowEightDecision = false;
-                      setState(() {
-                        final previousPlayerCount = _orderedUserNames.length;
-                        final removedUserIds = removeIndices
-                            .map((i) => playersForRemove[i])
-                            .toSet();
-                        for (final removedUserId in removedUserIds) {
-                          _roundScores.remove(removedUserId);
-                          _explicitZeroRoundUserIds.remove(removedUserId);
-                          _totalScores.remove(removedUserId);
-                          _winsByUserId.remove(removedUserId);
-                          _completedBoltUserIds.remove(removedUserId);
-                          _removeUserFromPinnedSubstitutes(removedUserId);
-                          if (_currentBoltUserId == removedUserId) {
-                            _currentBoltUserId = null;
-                          }
-                          _disposeScoreInputFor(removedUserId);
-                        }
-                        _sessionRemovedPlayers += removedUserIds.length;
-                        _registerSessionUsers(removedUserIds);
-                        _orderedUserNames = _orderedUserNames
-                            .where((u) => !removedUserIds.contains(u))
-                            .toList();
-                        _refreshDisplayNamesFromProfiles();
-                        playerCount = _orderedUserNames.length;
-                        if (_tableSplitSelected) {
-                          _table1UserNames = _table1UserNames
-                              .where((u) => !removedUserIds.contains(u))
-                              .toList();
-                          _table2UserNames = _table2UserNames
-                              .where((u) => !removedUserIds.contains(u))
-                              .toList();
-                          _refreshDisplayNamesFromProfiles();
-                          if (currentTable == 2 && _table2UserNames.isEmpty) {
-                            currentTable = 1;
-                          } else if (currentTable == 1 &&
-                              _table1UserNames.isEmpty &&
-                              _table2UserNames.isNotEmpty) {
-                            currentTable = 2;
-                          }
-                          shouldAskBelowEightDecision =
-                              previousPlayerCount >= 8 && playerCount < 8;
-                        }
-                      });
-
-                      if (shouldAskBelowEightDecision) {
-                        Future.microtask(_showBelowEightSplitDecisionDialog);
-                      }
-                    },
-                  );
-                }
-              },
-              style: ElevatedButton.styleFrom(
-                  minimumSize: const Size(36, 36), padding: EdgeInsets.zero),
-              child: const Icon(Icons.remove, size: 20),
-            ),
-            const SizedBox(width: 4),
-            Text('Тоглогч: $playerCount', style: const TextStyle(fontSize: 16)),
-            const SizedBox(width: 4),
-            ElevatedButton(
-              onPressed: () async {
-                if (playerCount >= 14) {
-                  return;
-                }
-                final selectedToAdd = await Navigator.push<List<String>>(
-                  context,
-                  MaterialPageRoute(
-                    builder: (context) => PlayerSelectionPage(
-                      isAddingMode: true,
-                      excludedUserIds: _orderedUserNames,
-                    ),
-                  ),
-                );
-
-                if (selectedToAdd == null || selectedToAdd.isEmpty) return;
-
-                setState(() {
-                  final addedNow = <String>[];
-                  for (final userId in selectedToAdd) {
-                    if (_orderedUserNames.length >= 14) break;
-                    if (_orderedUserNames.contains(userId)) continue;
-                    _orderedUserNames.add(userId);
-                    addedNow.add(userId);
-                  }
-                  if (addedNow.isNotEmpty) {
-                    _sessionAddedPlayers += addedNow.length;
-                    _registerSessionUsers(addedNow);
-                  }
-                  _refreshDisplayNamesFromProfiles();
-                  playerCount = _orderedUserNames.length;
-                  if (playerCount > 7) {
-                    _tableSplitSelected = false;
-                  }
-                  _disposeDetachedScoreInputs();
-                });
-                _loadUserProfilesByIds(selectedToAdd);
-              },
-              style: ElevatedButton.styleFrom(
-                  minimumSize: const Size(36, 36), padding: EdgeInsets.zero),
-              child: const Icon(Icons.add, size: 20),
-            ),
-            const SizedBox(width: 8),
-            ElevatedButton(
-              onPressed: null, // Round info not implemented
-              style: ElevatedButton.styleFrom(
-                  minimumSize: const Size(36, 36),
-                  padding: EdgeInsets.symmetric(horizontal: 12)),
-              child:
-                  Text(_roundInfoLabel, style: const TextStyle(fontSize: 16)),
-            ),
-            if (_isBoltMode) ...[
-              const SizedBox(width: 8),
-              Container(
-                padding:
-                    const EdgeInsets.symmetric(horizontal: 12, vertical: 6),
-                decoration: BoxDecoration(
-                  color: Colors.red.shade700,
-                  borderRadius: BorderRadius.circular(8),
-                ),
-                child: const Text(
-                  'БООЛТ',
-                  style: TextStyle(
-                    color: Colors.white,
-                    fontWeight: FontWeight.bold,
-                    fontSize: 18,
-                    letterSpacing: 1.2,
-                  ),
-                ),
-              ),
-            ],
-            const SizedBox(width: 8),
-            IconButton(
-              icon: const Icon(Icons.settings),
-              onPressed: () {
-                showDialog(
-                  context: context,
-                  builder: (context) {
-                    TextEditingController scoreController =
-                        TextEditingController(
-                      text: _scoreLimit.toString(),
-                    );
-                    TextEditingController betController = TextEditingController(
-                      text: _betAmount.toString(),
-                    );
-                    TextEditingController boltScoreController =
-                        TextEditingController(
-                      text: _boltScoreLimit.toString(),
-                    );
-                    TextEditingController boltBetController =
-                        TextEditingController(
-                      text: _boltBetAmount.toString(),
-                    );
-                    return AlertDialog(
-                      title: const Text('Тоглох ширээний тохиргоо'),
-                      content: SingleChildScrollView(
-                        child: Column(
-                          mainAxisSize: MainAxisSize.min,
-                          crossAxisAlignment: CrossAxisAlignment.start,
-                          children: [
-                            const Text(
-                              'Энгийн тоглолт',
-                              style: TextStyle(fontWeight: FontWeight.bold),
-                            ),
-                            const SizedBox(height: 8),
-                            TextField(
-                              controller: scoreController,
-                              keyboardType: TextInputType.number,
-                              decoration: const InputDecoration(
-                                labelText: 'Онооны хязгаар',
-                              ),
-                            ),
-                            const SizedBox(height: 12),
-                            TextField(
-                              controller: betController,
-                              keyboardType: TextInputType.number,
-                              decoration: const InputDecoration(
-                                labelText: 'Бооцооны дүн',
-                              ),
-                            ),
-                            const SizedBox(height: 18),
-                            const Text(
-                              'Боолт тоглолт',
-                              style: TextStyle(fontWeight: FontWeight.bold),
-                            ),
-                            const SizedBox(height: 8),
-                            TextField(
-                              controller: boltScoreController,
-                              keyboardType: TextInputType.number,
-                              decoration: const InputDecoration(
-                                labelText: 'Боолт үеийн онооны хязгаар',
-                              ),
-                            ),
-                            const SizedBox(height: 12),
-                            TextField(
-                              controller: boltBetController,
-                              keyboardType: TextInputType.number,
-                              decoration: const InputDecoration(
-                                labelText: 'Боолт үеийн бооцооны дүн',
-                              ),
-                            ),
-                          ],
-                        ),
-                      ),
-                      actions: [
-                        TextButton(
-                          onPressed: () {
-                            Navigator.of(context).pop();
-                          },
-                          child: const Text('Болих'),
-                        ),
-                        ElevatedButton(
-                          onPressed: () {
-                            setState(() {
-                              final nextScore =
-                                  int.tryParse(scoreController.text);
-                              final nextBet = int.tryParse(betController.text);
-                              final nextBoltScore =
-                                  int.tryParse(boltScoreController.text);
-                              final nextBoltBet =
-                                  int.tryParse(boltBetController.text);
-
-                              if (nextScore != null && nextScore > 0) {
-                                _scoreLimit = nextScore;
-                              }
-                              if (nextBet != null && nextBet > 0) {
-                                _betAmount = nextBet;
-                              }
-                              if (nextBoltScore != null && nextBoltScore > 0) {
-                                _boltScoreLimit = nextBoltScore;
-                              }
-                              if (nextBoltBet != null && nextBoltBet > 0) {
-                                _boltBetAmount = nextBoltBet;
-                              }
-                              // TODO: Update poker game logic if needed
-                            });
-                            Navigator.of(context).pop();
-                          },
-                          child: const Text('Хадгалах'),
-                        ),
-                      ],
-                    );
+              if (_tableSplitSelected && _table2UserNames.isNotEmpty) ...[
+                const SizedBox(width: 8),
+                ElevatedButton(
+                  onPressed: () {
+                    setState(() {
+                      currentTable = 1;
+                    });
                   },
-                );
-              },
-            ),
-          ],
+                  style: ElevatedButton.styleFrom(
+                    backgroundColor:
+                        currentTable == 1 ? Colors.blue : Colors.grey[300],
+                    foregroundColor:
+                        currentTable == 1 ? Colors.white : Colors.black,
+                    minimumSize: const Size(36, 36),
+                    padding: const EdgeInsets.symmetric(horizontal: 8),
+                  ),
+                  child: const Text('T1'),
+                ),
+                const SizedBox(width: 4),
+                ElevatedButton(
+                  onPressed: () {
+                    setState(() {
+                      currentTable = 2;
+                    });
+                  },
+                  style: ElevatedButton.styleFrom(
+                    backgroundColor:
+                        currentTable == 2 ? Colors.blue : Colors.grey[300],
+                    foregroundColor:
+                        currentTable == 2 ? Colors.white : Colors.black,
+                    minimumSize: const Size(36, 36),
+                    padding: const EdgeInsets.symmetric(horizontal: 8),
+                  ),
+                  child: const Text('T2'),
+                ),
+              ],
+              if (!widget.autoReturnOnWinner) ...[
+                const SizedBox(width: 8),
+                DecoratedBox(
+                  decoration: BoxDecoration(
+                    color: Colors.white,
+                    borderRadius: BorderRadius.circular(8),
+                  ),
+                  child: Padding(
+                    padding:
+                        const EdgeInsets.symmetric(horizontal: 12, vertical: 8),
+                    child: Text(
+                      _roundInfoLabel,
+                      style: const TextStyle(fontSize: 16),
+                    ),
+                  ),
+                ),
+              ],
+              if (_isBoltMode) ...[
+                const SizedBox(width: 8),
+                Container(
+                  padding:
+                      const EdgeInsets.symmetric(horizontal: 12, vertical: 6),
+                  decoration: BoxDecoration(
+                    color: Colors.red.shade700,
+                    borderRadius: BorderRadius.circular(8),
+                  ),
+                  child: const Text(
+                    'БООЛТ',
+                    style: TextStyle(
+                      color: Colors.white,
+                      fontWeight: FontWeight.bold,
+                      fontSize: 18,
+                      letterSpacing: 1.2,
+                    ),
+                  ),
+                ),
+              ],
+              if (_currentRegistrarUserId != null) ...[
+                const SizedBox(width: 8),
+                Tooltip(
+                  message:
+                      'Бүртгэл хөтлөгч: ${_displayNameForUserId(_currentRegistrarUserId!, 0)}',
+                  child: Row(
+                    children: [
+                      Image.asset(
+                        'assets/buttons/keyboard.png',
+                        width: 18,
+                        height: 18,
+                        fit: BoxFit.contain,
+                      ),
+                      const SizedBox(width: 4),
+                      Text(
+                        _displayNameForUserId(_currentRegistrarUserId!, 0),
+                        style: const TextStyle(
+                          fontSize: 12,
+                          fontWeight: FontWeight.w600,
+                        ),
+                      ),
+                    ],
+                  ),
+                ),
+              ],
+            ],
+          ),
         ),
+        onBack: () {
+          _handleBackFromGameAppBar();
+        },
+        onRemovePlayer: _orderedUserNames.length > 2
+            ? _showRemovePlayerDialogFromAppBar
+            : null,
+        onAddPlayer: playerCount < 14 ? _addPlayerFromAppBar : null,
+        onSave: _saveProgress,
+        onStatistics: _openStatisticsDashboard,
+        onReport: _showSessionSummaryDialog,
+        onPrint: _printSessionReport,
+        onSettings: _showTableSettingsDialog,
+        onExit: _showExitDecisionDialog,
+        preferCustomExitAction: true,
+        extraActions: [
+          IconButton(
+            icon: Opacity(
+              opacity: _canTransferRegistrarPermission ? 1 : 0.45,
+              child: Image.asset(
+                'assets/buttons/keyboard.png',
+                width: 22,
+                height: 22,
+                fit: BoxFit.contain,
+              ),
+            ),
+            onPressed: _canTransferRegistrarPermission
+                ? _showTransferRegistrarDialog
+                : null,
+            tooltip: _canTransferRegistrarPermission
+                ? 'Бүртгэл хөтлөгчийн эрхийг нэг тоглогч руу шилжүүлэх'
+                : 'Бүртгэл хөтлөгчийн эрх шилжүүлэх боломжгүй',
+          ),
+        ],
       ),
       body: Padding(
         padding: const EdgeInsets.all(16.0),
@@ -3575,37 +4612,48 @@ class _PlayingTableScreenState extends State<ThirteenCardPokerScreen> {
     return total;
   }
 
-  Widget _buildDurakMemberChip(String userId) {
+  Widget _buildDurakMemberChip(String userId, {bool compact = false}) {
     final photoUrl = _photoUrlForUserId(userId);
     final displayName = _displayNameForUserId(userId, 0);
 
     return Container(
-      padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 6),
+      padding: EdgeInsets.symmetric(
+        horizontal: compact ? 6 : 8,
+        vertical: compact ? 5 : 6,
+      ),
       decoration: BoxDecoration(
         color: Colors.white.withOpacity(0.08),
         borderRadius: BorderRadius.circular(999),
         border: Border.all(color: Colors.white24),
       ),
       child: Row(
-        mainAxisSize: MainAxisSize.min,
+        mainAxisSize: MainAxisSize.max,
         children: [
           CircleAvatar(
-            radius: 12,
+            radius: compact ? 10 : 12,
             backgroundColor: Colors.blueGrey.shade700,
             backgroundImage: (photoUrl != null && photoUrl.isNotEmpty)
                 ? NetworkImage(photoUrl)
                 : null,
             child: (photoUrl == null || photoUrl.isEmpty)
-                ? const Icon(Icons.person, size: 14, color: Colors.white)
+                ? Icon(
+                    Icons.person,
+                    size: compact ? 12 : 14,
+                    color: Colors.white,
+                  )
                 : null,
           ),
-          const SizedBox(width: 6),
-          Text(
-            displayName,
-            style: const TextStyle(
-              color: Colors.white,
-              fontWeight: FontWeight.w600,
-              fontSize: 14,
+          SizedBox(width: compact ? 4 : 6),
+          Expanded(
+            child: Text(
+              displayName,
+              maxLines: 1,
+              overflow: TextOverflow.ellipsis,
+              style: TextStyle(
+                color: Colors.white,
+                fontWeight: FontWeight.w600,
+                fontSize: compact ? 11.5 : 14,
+              ),
             ),
           ),
         ],
@@ -3689,12 +4737,46 @@ class _PlayingTableScreenState extends State<ThirteenCardPokerScreen> {
       child: Column(
         crossAxisAlignment: CrossAxisAlignment.start,
         children: [
-          Wrap(
-            spacing: 8,
-            runSpacing: 8,
-            children: blockUserIds
-                .map((userId) => _buildDurakMemberChip(userId))
-                .toList(),
+          LayoutBuilder(
+            builder: (context, constraints) {
+              final isCompact = blockUserIds.length >= 4;
+
+              if (blockUserIds.length <= 4) {
+                return Row(
+                  children: [
+                    for (int i = 0; i < blockUserIds.length; i++) ...[
+                      Expanded(
+                        child: _buildDurakMemberChip(
+                          blockUserIds[i],
+                          compact: isCompact,
+                        ),
+                      ),
+                      if (i != blockUserIds.length - 1)
+                        const SizedBox(width: 8),
+                    ],
+                  ],
+                );
+              }
+
+              return SingleChildScrollView(
+                scrollDirection: Axis.horizontal,
+                child: Row(
+                  children: [
+                    for (int i = 0; i < blockUserIds.length; i++) ...[
+                      ConstrainedBox(
+                        constraints: const BoxConstraints(minWidth: 110),
+                        child: _buildDurakMemberChip(
+                          blockUserIds[i],
+                          compact: true,
+                        ),
+                      ),
+                      if (i != blockUserIds.length - 1)
+                        const SizedBox(width: 8),
+                    ],
+                  ],
+                ),
+              );
+            },
           ),
           const Spacer(),
           Wrap(
@@ -3760,20 +4842,28 @@ class _PlayingTableScreenState extends State<ThirteenCardPokerScreen> {
     final userIdForBlock = (index >= 0 && _activeUserNames.length > index)
         ? _activeUserNames[index]
         : null;
+    final isTournamentSlotMode = widget.gameType == '13 МОДНЫ ПОКЕР' &&
+        !_tableSplitSelected &&
+        _activeUserNames.length >= 5 &&
+        _activeUserNames.length <= 7;
+    final isFixedYellowZoneSlot =
+        isTournamentSlotMode && index >= 4 && index < _activeUserNames.length;
 
     final isEliminatedForBorder =
         userIdForBlock != null && _isEliminatedByScore(userIdForBlock);
-    final isBenchedForBorder =
-        userIdForBlock != null && _isBenchedForCurrentTable(userIdForBlock);
+    final isBenchedForBorder = userIdForBlock != null &&
+        (isFixedYellowZoneSlot ||
+            (!isTournamentSlotMode &&
+                _isBenchedForCurrentTable(userIdForBlock)));
     final borderColor = isEliminatedForBorder
         ? Colors.red
-        : (isBenchedForBorder ? Colors.yellow : Colors.white);
+        : (isBenchedForBorder ? Colors.yellow : Colors.green);
     final badgeBgColor = isEliminatedForBorder
         ? Colors.red
-        : (isBenchedForBorder ? Colors.yellow.shade700 : Colors.white);
+        : (isBenchedForBorder ? Colors.yellow.shade700 : Colors.green.shade700);
     final badgeFgColor = isEliminatedForBorder
         ? Colors.white
-        : (isBenchedForBorder ? Colors.black87 : Colors.blue[900]!);
+        : (isBenchedForBorder ? Colors.black87 : Colors.white);
 
     return Card(
       color: tableBgColor,
@@ -3792,7 +4882,9 @@ class _PlayingTableScreenState extends State<ThirteenCardPokerScreen> {
               : null;
           final photoUrl = userId == null ? null : _photoUrlForUserId(userId);
           final isEliminated = userId != null && _isEliminatedByScore(userId);
-          final isBenched = userId != null && _isBenchedForCurrentTable(userId);
+          final isBenched = userId != null &&
+              (isFixedYellowZoneSlot ||
+                  (!isTournamentSlotMode && _isBenchedForCurrentTable(userId)));
           final scoreValueColor = isEliminated
               ? Colors.red
               : (isBenched ? Colors.amber.shade700 : Colors.black87);
@@ -3886,22 +4978,6 @@ class _PlayingTableScreenState extends State<ThirteenCardPokerScreen> {
             padding: const EdgeInsets.all(10.0),
             child: Stack(
               children: [
-                Positioned(
-                  top: compact ? 2 : 4,
-                  left: compact ? 2 : 4,
-                  child: CircleAvatar(
-                    backgroundColor: badgeBgColor,
-                    foregroundColor: badgeFgColor,
-                    radius: badgeRadius,
-                    child: Text(
-                      '${_dynamicBadgeNumberForUser(userIdForBlock, index)}',
-                      style: TextStyle(
-                        fontWeight: FontWeight.bold,
-                        fontSize: compact ? 16 : 18,
-                      ),
-                    ),
-                  ),
-                ),
                 Positioned.fill(
                   child: Padding(
                     padding: const EdgeInsets.only(top: 2),
@@ -4054,6 +5130,53 @@ class _PlayingTableScreenState extends State<ThirteenCardPokerScreen> {
                     ),
                   ),
                 ),
+                Positioned(
+                  top: compact ? 2 : 4,
+                  left: compact ? 2 : 4,
+                  child: CircleAvatar(
+                    backgroundColor: badgeBgColor,
+                    foregroundColor: badgeFgColor,
+                    radius: badgeRadius,
+                    child: Text(
+                      '${_dynamicBadgeNumberForUser(userIdForBlock, index)}',
+                      style: TextStyle(
+                        fontWeight: FontWeight.bold,
+                        fontSize: compact ? 16 : 18,
+                      ),
+                    ),
+                  ),
+                ),
+                if (widget.multiWinsByUserId != null)
+                  Positioned(
+                    top: compact ? 4 : 8,
+                    right: compact ? 2 : 4,
+                    child: Container(
+                      padding: const EdgeInsets.symmetric(
+                          horizontal: 6, vertical: 2),
+                      decoration: BoxDecoration(
+                        color: Colors.black.withOpacity(0.55),
+                        borderRadius: BorderRadius.circular(10),
+                      ),
+                      child: Row(
+                        children: [
+                          const Icon(
+                            Icons.emoji_events,
+                            color: Colors.amber,
+                            size: 14,
+                          ),
+                          const SizedBox(width: 2),
+                          Text(
+                            '${widget.multiWinsByUserId?[userIdForBlock ?? ''] ?? 0}',
+                            style: const TextStyle(
+                              color: Colors.white,
+                              fontSize: 12,
+                              fontWeight: FontWeight.w700,
+                            ),
+                          ),
+                        ],
+                      ),
+                    ),
+                  ),
               ],
             ),
           );
@@ -4074,8 +5197,10 @@ class _PlayingTableScreenState extends State<ThirteenCardPokerScreen> {
         candidates.where((id) => _isEliminatedByScore(id)).toList();
 
     if (_isEliminatedByScore(userId)) {
-      final rank = eliminated.indexOf(userId);
-      return rank >= 0 ? rank + 1 : fallbackIndex + 1;
+      final rank = _uRankings[userId];
+      if (rank != null) return rank;
+      final fallbackRank = eliminated.indexOf(userId);
+      return fallbackRank >= 0 ? fallbackRank + 1 : fallbackIndex + 1;
     }
 
     if (benched.contains(userId)) {

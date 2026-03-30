@@ -1,0 +1,57 @@
+type User @table {
+  displayName: String!
+  createdAt: Timestamp!
+  email: String
+  photoUrl: String
+}
+
+type Game @table {
+  name: String!
+  createdAt: Timestamp!
+  description: String
+  rules: String
+}
+
+type GameSession @table {
+  game: Game!
+  createdAt: Timestamp!
+  status: String!
+  startTime: Timestamp
+  endTime: Timestamp
+  winner: User
+}
+
+type PlayerSession @table {
+  user: User!
+  gameSession: GameSession!
+  createdAt: Timestamp!
+  currentScore: Int!
+  virtualCurrency: Int!
+  team: String
+  playerNumber: Int
+}
+
+type ScoreEntry @table {
+  playerSession: PlayerSession!
+  gameSession: GameSession!
+  scoreChange: Int!
+  createdAt: Timestamp!
+  description: String
+}
+
+type Bet @table {
+  user: User!
+  gameSession: GameSession!
+  amount: Int!
+  placedAt: Timestamp!
+  outcome: String!
+  resolvedAt: Timestamp
+  winLossAmount: Int
+}
+
+type GameRule @table {
+  game: Game!
+  description: String!
+  ruleType: String!
+  parameters: String
+}

@@ -1,0 +1,59 @@
+mutation SeedDatabase @transaction @auth(level: USER, insecureReason: "This operation is for seeding data and should only be run by an authenticated user with appropriate permissions.") {
+  user_upsertMany(data: [
+    {
+      id: "a0eebc99-9c0b-4ef8-bb6d-6bb9bd380a11",
+      displayName: "Alice",
+      email: "alice@example.com",
+      createdAt: "2023-01-01T10:00:00Z",
+      photoUrl: "https://example.com/alice.jpg"
+    },
+    {
+      id: "b1f0e4b8-8c1c-4f7d-8d5a-1b1d2d3e4f5g",
+      displayName: "Bob",
+      email: "bob@example.com",
+      createdAt: "2023-01-01T10:05:00Z",
+      photoUrl: "https://example.com/bob.jpg"
+    }
+  ]) {
+    id
+  }
+  game_upsertMany(data: [
+    {
+      id: "c2d1f0e8-7b2d-4e6c-9a4f-2c2d3e4f5g6h",
+      name: "Chess Masters",
+      createdAt: "2023-01-05T11:00:00Z",
+      description: "Classic game of chess.",
+      rules: "Standard chess rules apply."
+    },
+    {
+      id: "d3e2f1e9-6a3f-4d5b-8b6e-3d3e4f5g6h7i",
+      name: "Card Battle",
+      createdAt: "2023-01-06T12:00:00Z",
+      description: "A strategic card game.",
+      rules: "Each player draws 5 cards."
+    }
+  ]) {
+    id
+  }
+  gameSession_upsertMany(data: [
+    {
+      id: "e4f3g2f1-5a4e-3c4a-7c8a-4e4f5g6h7i8j",
+      gameId: "c2d1f0e8-7b2d-4e6c-9a4f-2c2d3e4f5g6h",
+      status: "COMPLETED",
+      createdAt: "2023-01-10T13:00:00Z",
+      startTime: "2023-01-10T13:05:00Z",
+      endTime: "2023-01-10T14:00:00Z",
+      winnerId: "a0eebc99-9c0b-4ef8-bb6d-6bb9bd380a11"
+    },
+    {
+      id: "f5g4h3g2-4b5d-2d3b-6b9b-5f5g6h7i8j9k",
+      gameId: "d3e2f1e9-6a3f-4d5b-8b6e-3d3e4f5g6h7i",
+      status: "IN_PROGRESS",
+      createdAt: "2023-01-11T15:00:00Z",
+      startTime: "2023-01-11T15:10:00Z",
+      winnerId: null
+    }
+  ]) {
+    id
+  }
+}

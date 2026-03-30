@@ -1,15 +1,37 @@
 import 'package:flutter/material.dart';
 import 'kinds_of_game.dart';
 
-class PlayingFormatPage extends StatelessWidget {
-  const PlayingFormatPage({super.key, required this.selectedUserIds});
+class PlayingFormatPage extends StatefulWidget {
+  const PlayingFormatPage({
+    super.key,
+    required this.selectedUserIds,
+    this.currentUserId,
+    this.canManageGames = false,
+  });
 
   final List<String> selectedUserIds;
+  final String? currentUserId;
+  final bool canManageGames;
 
+  @override
+  State<PlayingFormatPage> createState() => _PlayingFormatPageState();
+}
+
+class _PlayingFormatPageState extends State<PlayingFormatPage> {
   @override
   Widget build(BuildContext context) {
     return Scaffold(
       appBar: AppBar(
+        leading: IconButton(
+          tooltip: 'Буцах',
+          onPressed: () => Navigator.of(context).maybePop(),
+          icon: Image.asset(
+            'assets/buttons/back.png',
+            width: 24,
+            height: 24,
+            fit: BoxFit.contain,
+          ),
+        ),
         title: const Text('Тоглолтын хэлбэр'),
         elevation: 0,
       ),
@@ -21,6 +43,7 @@ class PlayingFormatPage extends StatelessWidget {
               'Олон\nтөрөлт',
               Colors.deepPurple,
               'assets/all kinds.jpg',
+              format: 'multi',
             ),
           ),
           Expanded(
@@ -29,6 +52,7 @@ class PlayingFormatPage extends StatelessWidget {
               'Нэг төрлөөр\nтойрох',
               Colors.blue,
               'assets/a kind.jpg',
+              format: 'single',
             ),
           ),
           Expanded(
@@ -37,6 +61,7 @@ class PlayingFormatPage extends StatelessWidget {
               'Галзуу\nганц',
               Colors.deepOrange,
               'assets/one time.jpg',
+              format: 'crazy',
             ),
           ),
         ],
@@ -48,8 +73,9 @@ class PlayingFormatPage extends StatelessWidget {
     BuildContext context,
     String title,
     Color color,
-    String? imagePath,
-  ) {
+    String? imagePath, {
+    required String format,
+  }) {
     return Container(
       margin: const EdgeInsets.all(4),
       decoration: BoxDecoration(
@@ -64,7 +90,10 @@ class PlayingFormatPage extends StatelessWidget {
               context,
               MaterialPageRoute(
                 builder: (context) => KindsOfGamePage(
-                  selectedUserIds: selectedUserIds,
+                  selectedUserIds: widget.selectedUserIds,
+                  playingFormat: format,
+                  currentUserId: widget.currentUserId,
+                  canManageGames: widget.canManageGames,
                 ),
               ),
             );

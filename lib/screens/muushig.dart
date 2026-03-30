@@ -3,10 +3,13 @@ import 'package:flutter/services.dart';
 import 'package:cloud_firestore/cloud_firestore.dart';
 import 'package:pdf/widgets.dart' as pw;
 import 'package:printing/printing.dart';
+import 'package:share_plus/share_plus.dart';
 import 'package:toocoob/screens/statistics_dashboard.dart';
 import 'package:toocoob/utils/statistics_repository.dart';
-import 'package:toocoob/screens/player_selection_page.dart';
 import 'package:toocoob/utils/game_registrar_transfer.dart';
+import 'package:toocoob/utils/saved_game_sessions_repository.dart';
+import 'package:toocoob/widgets/unified_game_app_bar.dart';
+import 'package:toocoob/screens/kinds_of_game.dart';
 
 enum _MuushigSettlementMode {
   basePenalty,
@@ -20,17 +23,29 @@ class MuushigPage extends StatefulWidget {
     this.selectedUserIds = const [],
     this.currentUserId,
     this.canManageGames = false,
+    this.initialSavedSessionId,
+    this.autoReturnOnWinner = false,
+    this.multiWinsByUserId,
+    this.multiCurrentTypeNumber,
+    this.multiTotalTypeCount,
   });
 
   final List<String> selectedUserIds;
   final String? currentUserId;
   final bool canManageGames;
+  final String? initialSavedSessionId;
+  final bool autoReturnOnWinner;
+  final Map<String, int>? multiWinsByUserId;
+  final int? multiCurrentTypeNumber;
+  final int? multiTotalTypeCount;
 
   @override
   State<MuushigPage> createState() => _MuushigPageState();
 }
 
 class _MuushigPageState extends State<MuushigPage> {
+  final SavedGameSessionsRepository _savedSessionsRepo =
+      SavedGameSessionsRepository();
   late final List<String> _selectedUserIdsSnapshot;
   int _roundNumber = 1;
   bool _playerOrderSelected = false;
@@ -53,6 +68,8 @@ class _MuushigPageState extends State<MuushigPage> {
   bool _selectedProfilesLoaded = true;
   bool _sessionAddedToStatistics = false;
   String? _currentRegistrarUserId;
+  String? _activeSavedSessionId;
+  bool _multiAutoReturnTriggered = false;
 
   bool get _canTransferRegistrar =>
       widget.canManageGames &&
@@ -70,6 +87,19 @@ class _MuushigPageState extends State<MuushigPage> {
 
   List<_MuushigSeat> _seats = [];
 
+  bool get _isTwoPlayerMode => _seats.length == 2;
+
+  void _applyTwoPlayerAlwaysPlaying() {
+    if (!_isTwoPlayerMode) return;
+    _needsPlaySelectionPrompt = false;
+    _roundPlayChoices
+      ..clear()
+      ..addEntries(_seats.map((seat) => MapEntry(seat.username, true)));
+    _activePlayingUsernames
+      ..clear()
+      ..addAll(_seats.map((seat) => seat.username));
+  }
+
   @override
   void initState() {
     super.initState();
@@ -80,6 +110,7 @@ class _MuushigPageState extends State<MuushigPage> {
     _seats = _selectedUserIdsSnapshot.isNotEmpty
         ? _buildSeatsFromSelectedUsers(_selectedUserIdsSnapshot)
         : _buildDefaultSeats();
+    _tryRestoreSavedSession();
 
     if (_selectedUserIdsSnapshot.isNotEmpty) {
       _selectedProfilesLoaded = false;
@@ -98,6 +129,8 @@ class _MuushigPageState extends State<MuushigPage> {
     if (_selectedUserIdsSnapshot.isNotEmpty) {
       _loadSelectedUserProfiles();
     }
+
+    _applyTwoPlayerAlwaysPlaying();
   }
 
   Future<void> _transferRegistrarRole() async {
@@ -255,6 +288,7 @@ class _MuushigPageState extends State<MuushigPage> {
       _selectedProfilesLoaded = true;
 
       _needsPlaySelectionPrompt = false;
+      _applyTwoPlayerAlwaysPlaying();
     });
   }
 
@@ -341,6 +375,213 @@ class _MuushigPageState extends State<MuushigPage> {
         isRoundPenaltyFive: false,
       );
     });
+  }
+
+  Future<void> _tryRestoreSavedSession() async {
+    final id = widget.initialSavedSessionId;
+    if (id == null || id.isEmpty) return;
+
+    final saved = await _savedSessionsRepo.findById(id);
+    if (!mounted || saved == null || saved.gameKey != 'muushig') return;
+
+    final payload = saved.payload;
+    final seatsPayload = (payload['seats'] as List<dynamic>? ?? const [])
+        .whereType<Map>()
+        .map((entry) => Map<String, dynamic>.from(entry))
+        .toList(growable: false);
+    if (seatsPayload.isEmpty) return;
+
+    final restoredSeats = seatsPayload
+        .map(
+          (entry) => _MuushigSeat(
+            userId: entry['userId'] as String?,
+            username: (entry['username'] as String? ?? '').trim(),
+            displayName: (entry['displayName'] as String? ?? '').trim(),
+            photoUrl: entry['photoUrl'] as String?,
+            roundScoreText: (entry['roundScoreText'] as String? ?? '-').trim(),
+            totalScoreText: (entry['totalScoreText'] as String? ?? '15').trim(),
+            wins: (entry['wins'] as num?)?.toInt() ?? 0,
+            money: (entry['money'] as num?)?.toInt() ?? 0,
+            bombs: (entry['bombs'] as num?)?.toInt() ?? 0,
+            isRoundPenaltyFive: entry['isRoundPenaltyFive'] as bool? ?? false,
+          ),
+        )
+        .where((seat) => seat.username.isNotEmpty)
+        .toList(growable: false);
+    if (restoredSeats.isEmpty) return;
+
+    final roundScoreInputs = Map<String, dynamic>.from(
+      payload['roundScoreInputs'] as Map? ?? const {},
+    );
+    final restoredControllers = <String, TextEditingController>{};
+    final restoredFocusNodes = <String, FocusNode>{};
+    for (final seat in restoredSeats) {
+      restoredControllers[seat.username] = TextEditingController(
+        text: (roundScoreInputs[seat.username] as String? ?? '').trim(),
+      );
+      restoredFocusNodes[seat.username] = FocusNode();
+    }
+
+    for (final controller in _roundScoreControllers.values) {
+      controller.dispose();
+    }
+    for (final focusNode in _roundScoreFocusNodes.values) {
+      focusNode.dispose();
+    }
+
+    if (!mounted) return;
+    setState(() {
+      _activeSavedSessionId = id;
+      _roundNumber = (payload['roundNumber'] as num?)?.toInt() ?? _roundNumber;
+      _playerOrderSelected =
+          payload['playerOrderSelected'] as bool? ?? _playerOrderSelected;
+      _isBoltMode = payload['isBoltMode'] as bool? ?? _isBoltMode;
+      _isMiddleBoltMode =
+          payload['isMiddleBoltMode'] as bool? ?? _isMiddleBoltMode;
+      _normalRoundsPlayed = (payload['normalRoundsPlayed'] as num?)?.toInt() ??
+          _normalRoundsPlayed;
+      _totalBoltRounds =
+          (payload['totalBoltRounds'] as num?)?.toInt() ?? _totalBoltRounds;
+      _boltRoundsPlayed =
+          (payload['boltRoundsPlayed'] as num?)?.toInt() ?? _boltRoundsPlayed;
+      _sessionOrdinaryRounds =
+          (payload['sessionOrdinaryRounds'] as num?)?.toInt() ??
+              _sessionOrdinaryRounds;
+      _sessionBoltRounds =
+          (payload['sessionBoltRounds'] as num?)?.toInt() ?? _sessionBoltRounds;
+      _sessionMiddleBoltRounds =
+          (payload['sessionMiddleBoltRounds'] as num?)?.toInt() ??
+              _sessionMiddleBoltRounds;
+      _sessionCompleted =
+          payload['sessionCompleted'] as bool? ?? _sessionCompleted;
+      _needsPlaySelectionPrompt =
+          payload['needsPlaySelectionPrompt'] as bool? ??
+              _needsPlaySelectionPrompt;
+      _selectedProfilesLoaded =
+          payload['selectedProfilesLoaded'] as bool? ?? _selectedProfilesLoaded;
+      _sessionAddedToStatistics =
+          payload['sessionAddedToStatistics'] as bool? ?? false;
+      _currentRegistrarUserId = payload['currentRegistrarUserId'] as String? ??
+          _currentRegistrarUserId;
+      _settlementMode = _MuushigSettlementMode.values[
+          ((payload['settlementMode'] as num?)?.toInt() ??
+                  _settlementMode.index)
+              .clamp(0, _MuushigSettlementMode.values.length - 1)];
+      _baseNormalAmount =
+          (payload['baseNormalAmount'] as num?)?.toInt() ?? _baseNormalAmount;
+      _baseBoltAmount =
+          (payload['baseBoltAmount'] as num?)?.toInt() ?? _baseBoltAmount;
+      _penaltyPerBomb =
+          (payload['penaltyPerBomb'] as num?)?.toInt() ?? _penaltyPerBomb;
+      _scoreRateNormal =
+          (payload['scoreRateNormal'] as num?)?.toInt() ?? _scoreRateNormal;
+      _scoreRateBolt =
+          (payload['scoreRateBolt'] as num?)?.toInt() ?? _scoreRateBolt;
+      _flatLoserNormal =
+          (payload['flatLoserNormal'] as num?)?.toInt() ?? _flatLoserNormal;
+      _flatLoserBolt =
+          (payload['flatLoserBolt'] as num?)?.toInt() ?? _flatLoserBolt;
+      _seats = restoredSeats;
+      _roundScoreControllers
+        ..clear()
+        ..addAll(restoredControllers);
+      _roundScoreFocusNodes
+        ..clear()
+        ..addAll(restoredFocusNodes);
+      _activePlayingUsernames
+        ..clear()
+        ..addAll(
+          (payload['activePlayingUsernames'] as List<dynamic>? ?? const [])
+              .whereType<String>(),
+        );
+      _roundPlayChoices
+        ..clear()
+        ..addAll(
+          Map<String, dynamic>.from(
+            payload['roundPlayChoices'] as Map? ?? const {},
+          ).map(
+            (key, value) => MapEntry(key, value == true),
+          ),
+        );
+      _penaltyFiveUsernames
+        ..clear()
+        ..addAll(
+          (payload['penaltyFiveUsernames'] as List<dynamic>? ?? const [])
+              .whereType<String>(),
+        );
+      _applyTwoPlayerAlwaysPlaying();
+    });
+  }
+
+  Future<void> _saveProgress() async {
+    final selectedUserIds = _seats
+        .map((seat) => seat.userId)
+        .whereType<String>()
+        .where((id) => id.isNotEmpty)
+        .toList(growable: false);
+
+    final sessionId = await _savedSessionsRepo.saveOrUpdate(
+      sessionId: _activeSavedSessionId,
+      gameKey: 'muushig',
+      gameLabel: 'Муушиг',
+      selectedUserIds: selectedUserIds,
+      payload: {
+        'roundNumber': _roundNumber,
+        'playerOrderSelected': _playerOrderSelected,
+        'isBoltMode': _isBoltMode,
+        'isMiddleBoltMode': _isMiddleBoltMode,
+        'normalRoundsPlayed': _normalRoundsPlayed,
+        'totalBoltRounds': _totalBoltRounds,
+        'boltRoundsPlayed': _boltRoundsPlayed,
+        'sessionOrdinaryRounds': _sessionOrdinaryRounds,
+        'sessionBoltRounds': _sessionBoltRounds,
+        'sessionMiddleBoltRounds': _sessionMiddleBoltRounds,
+        'sessionCompleted': _sessionCompleted,
+        'needsPlaySelectionPrompt': _needsPlaySelectionPrompt,
+        'selectedProfilesLoaded': _selectedProfilesLoaded,
+        'sessionAddedToStatistics': _sessionAddedToStatistics,
+        'currentRegistrarUserId': _currentRegistrarUserId,
+        'settlementMode': _settlementMode.index,
+        'baseNormalAmount': _baseNormalAmount,
+        'baseBoltAmount': _baseBoltAmount,
+        'penaltyPerBomb': _penaltyPerBomb,
+        'scoreRateNormal': _scoreRateNormal,
+        'scoreRateBolt': _scoreRateBolt,
+        'flatLoserNormal': _flatLoserNormal,
+        'flatLoserBolt': _flatLoserBolt,
+        'activePlayingUsernames': _activePlayingUsernames.toList(),
+        'roundPlayChoices': Map<String, bool>.from(_roundPlayChoices),
+        'penaltyFiveUsernames': _penaltyFiveUsernames.toList(),
+        'roundScoreInputs': _roundScoreControllers.map(
+          (key, controller) => MapEntry(key, controller.text),
+        ),
+        'seats': _seats
+            .map(
+              (seat) => {
+                'userId': seat.userId,
+                'username': seat.username,
+                'displayName': seat.displayName,
+                'photoUrl': seat.photoUrl,
+                'roundScoreText': seat.roundScoreText,
+                'totalScoreText': seat.totalScoreText,
+                'wins': seat.wins,
+                'money': seat.money,
+                'bombs': seat.bombs,
+                'isRoundPenaltyFive': seat.isRoundPenaltyFive,
+              },
+            )
+            .toList(growable: false),
+      },
+    );
+
+    _activeSavedSessionId = sessionId;
+  }
+
+  Future<void> _removeSavedProgressIfAny() async {
+    final id = _activeSavedSessionId;
+    if (id == null || id.isEmpty) return;
+    await _savedSessionsRepo.removeById(id);
+    _activeSavedSessionId = null;
   }
 
   @override
@@ -543,6 +784,10 @@ class _MuushigPageState extends State<MuushigPage> {
 
   void _applySettlementForWinner(
       List<_MuushigSeat> updatedSeats, int winnerIndex) {
+    if (widget.autoReturnOnWinner) {
+      return;
+    }
+
     var winnerGain = 0;
     for (int i = 0; i < updatedSeats.length; i++) {
       if (i == winnerIndex) continue;
@@ -883,6 +1128,22 @@ class _MuushigPageState extends State<MuushigPage> {
     }
   }
 
+  Future<void> _shareSessionReport() async {
+    try {
+      await SharePlus.instance.share(
+        ShareParams(
+          text: _buildSessionReportText(),
+          subject: 'Муушиг - тоглолтын тайлан',
+        ),
+      );
+    } catch (_) {
+      if (!mounted) return;
+      ScaffoldMessenger.of(context).showSnackBar(
+        const SnackBar(content: Text('Илгээх үйлдэл амжилтгүй.')),
+      );
+    }
+  }
+
   Future<void> _showExitReportAndFinish() async {
     final shouldFinish = await showDialog<bool>(
       context: context,
@@ -897,12 +1158,31 @@ class _MuushigPageState extends State<MuushigPage> {
             ),
           ),
           actions: [
-            TextButton(
+            TextButton.icon(
+              onPressed: () async {
+                Navigator.of(dialogContext).pop(false);
+                await _shareSessionReport();
+              },
+              icon: Image.asset(
+                'assets/buttons/send.png',
+                width: 18,
+                height: 18,
+                fit: BoxFit.contain,
+              ),
+              label: const Text('Илгээх'),
+            ),
+            TextButton.icon(
               onPressed: () async {
                 Navigator.of(dialogContext).pop(false);
                 await _printSessionReport();
               },
-              child: const Text('Хэвлэх'),
+              icon: Image.asset(
+                'assets/buttons/print.png',
+                width: 18,
+                height: 18,
+                fit: BoxFit.contain,
+              ),
+              label: const Text('Хэвлэх'),
             ),
             TextButton(
               onPressed: () async {
@@ -927,10 +1207,7 @@ class _MuushigPageState extends State<MuushigPage> {
     if (shouldFinish == true && mounted) {
       await _askRegistrarDecisionAtGameEndIfNeeded();
       if (!mounted) return;
-      Navigator.of(context).pushAndRemoveUntil(
-        MaterialPageRoute(builder: (context) => const PlayerSelectionPage()),
-        (route) => false,
-      );
+      Navigator.of(context).pop();
     }
   }
 
@@ -956,6 +1233,7 @@ class _MuushigPageState extends State<MuushigPage> {
     _penaltyFiveUsernames.clear();
     _roundPlayChoices.clear();
     _activePlayingUsernames.clear();
+    _applyTwoPlayerAlwaysPlaying();
   }
 
   void _resetForReplayKeepingMoneyOnly() {
@@ -984,6 +1262,7 @@ class _MuushigPageState extends State<MuushigPage> {
     _penaltyFiveUsernames.clear();
     _roundPlayChoices.clear();
     _activePlayingUsernames.clear();
+    _applyTwoPlayerAlwaysPlaying();
     _sessionCompleted = false;
   }
 
@@ -1284,13 +1563,7 @@ class _MuushigPageState extends State<MuushigPage> {
                           onPressed: () {
                             Navigator.of(context).pop();
                             if (!mounted) return;
-                            Navigator.of(this.context).pushAndRemoveUntil(
-                              MaterialPageRoute(
-                                builder: (context) =>
-                                    const PlayerSelectionPage(),
-                              ),
-                              (route) => false,
-                            );
+                            Navigator.of(this.context).pop();
                           },
                           child: const Text('Болих'),
                         ),
@@ -1684,9 +1957,24 @@ class _MuushigPageState extends State<MuushigPage> {
       _penaltyFiveUsernames.clear();
       _roundPlayChoices.clear();
       _activePlayingUsernames.clear();
+      _applyTwoPlayerAlwaysPlaying();
     });
 
     if (winnerIndex != null) {
+      if (widget.autoReturnOnWinner && !_multiAutoReturnTriggered) {
+        _multiAutoReturnTriggered = true;
+        final winnerSeat = _seats[winnerIndex];
+        final winnerUserId = winnerSeat.userId;
+        WidgetsBinding.instance.addPostFrameCallback((_) {
+          if (!mounted) return;
+          Navigator.of(context).pop(<String, dynamic>{
+            'completedGame': 'muushig',
+            if (winnerUserId != null && winnerUserId.isNotEmpty)
+              'winnerUserId': winnerUserId,
+          });
+        });
+        return;
+      }
       await _advanceAfterWinner();
     }
   }
@@ -1857,6 +2145,21 @@ class _MuushigPageState extends State<MuushigPage> {
   }
 
   Future<void> _showGameWinnerDialog(_MuushigSeat winnerSeat) async {
+    if (widget.autoReturnOnWinner && !_multiAutoReturnTriggered) {
+      _multiAutoReturnTriggered = true;
+      final winnerUserId = winnerSeat.userId;
+      WidgetsBinding.instance.addPostFrameCallback((_) {
+        if (!mounted) return;
+        Navigator.of(context).pop(<String, dynamic>{
+          'completedGame': 'muushig',
+          if (winnerUserId != null && winnerUserId.isNotEmpty)
+            'winnerUserId': winnerUserId,
+        });
+      });
+      return;
+    }
+
+    await _removeSavedProgressIfAny();
     await showDialog<void>(
       context: context,
       builder: (dialogContext) {
@@ -1875,6 +2178,7 @@ class _MuushigPageState extends State<MuushigPage> {
   }
 
   void _setSeatPlayingStatus(String username, bool shouldPlay) {
+    if (_isTwoPlayerMode) return;
     final currentChoice = _roundPlayChoices[username];
     if (currentChoice == shouldPlay) return;
 
@@ -1904,6 +2208,7 @@ class _MuushigPageState extends State<MuushigPage> {
         activeIndex != -1 && activeIndex == activePlayers.length - 1;
     const verticalGap = 6.0;
     final imageSide = blockWidth - 16;
+    final multiWins = widget.multiWinsByUserId?[seat.userId ?? ''] ?? 0;
 
     return SizedBox(
       width: blockWidth,
@@ -1976,6 +2281,35 @@ class _MuushigPageState extends State<MuushigPage> {
                       ),
                     ),
                   ),
+                  if (widget.multiWinsByUserId != null)
+                    Positioned(
+                      top: 6,
+                      right: 6,
+                      child: Container(
+                        padding: const EdgeInsets.symmetric(
+                            horizontal: 8, vertical: 4),
+                        decoration: BoxDecoration(
+                          color: Colors.black.withOpacity(0.55),
+                          borderRadius: BorderRadius.circular(14),
+                        ),
+                        child: Row(
+                          mainAxisSize: MainAxisSize.min,
+                          children: [
+                            const Icon(Icons.emoji_events,
+                                color: Colors.amber, size: 16),
+                            const SizedBox(width: 4),
+                            Text(
+                              '$multiWins',
+                              style: const TextStyle(
+                                color: Colors.white,
+                                fontSize: 13,
+                                fontWeight: FontWeight.w800,
+                              ),
+                            ),
+                          ],
+                        ),
+                      ),
+                    ),
                 ],
               ),
               const SizedBox(height: verticalGap),
@@ -2169,28 +2503,30 @@ class _MuushigPageState extends State<MuushigPage> {
                 ),
               ),
             ),
-            const SizedBox(height: 4),
-            InkWell(
-              onTap: () => _setSeatPlayingStatus(seat.username, false),
-              child: Container(
-                width: 26,
-                height: 26,
-                alignment: Alignment.center,
-                decoration: BoxDecoration(
-                  color: isRestingSelected ? Colors.red : Colors.white,
-                  borderRadius: BorderRadius.circular(4),
-                  border: Border.all(
-                    color: Colors.red,
-                    width: 1.5,
+            if (!_isTwoPlayerMode) ...[
+              const SizedBox(height: 4),
+              InkWell(
+                onTap: () => _setSeatPlayingStatus(seat.username, false),
+                child: Container(
+                  width: 26,
+                  height: 26,
+                  alignment: Alignment.center,
+                  decoration: BoxDecoration(
+                    color: isRestingSelected ? Colors.red : Colors.white,
+                    borderRadius: BorderRadius.circular(4),
+                    border: Border.all(
+                      color: Colors.red,
+                      width: 1.5,
+                    ),
+                  ),
+                  child: Icon(
+                    Icons.close,
+                    size: 17,
+                    color: isRestingSelected ? Colors.white : Colors.red,
                   ),
                 ),
-                child: Icon(
-                  Icons.close,
-                  size: 17,
-                  color: isRestingSelected ? Colors.white : Colors.red,
-                ),
               ),
-            ),
+            ],
           ],
         ),
       ],
@@ -2250,7 +2586,11 @@ class _MuushigPageState extends State<MuushigPage> {
 
   @override
   Widget build(BuildContext context) {
+    // Skip showing player order dialog if restoring from a saved session
+    final isRestoringFromSavedSession = widget.initialSavedSessionId != null &&
+        widget.initialSavedSessionId!.isNotEmpty;
     if (!_playerOrderSelected &&
+        !isRestoringFromSavedSession &&
         _selectedProfilesLoaded &&
         _seats.length >= 3 &&
         _seats.length <= 7 &&
@@ -2275,79 +2615,84 @@ class _MuushigPageState extends State<MuushigPage> {
     return WillPopScope(
       onWillPop: () async {
         if (!mounted) return false;
+        if (widget.autoReturnOnWinner) {
+          Navigator.of(context).pop();
+          return false;
+        }
         return _showExitReportDialog();
       },
       child: Scaffold(
         backgroundColor: const Color(0xFF9D2F2F),
-        appBar: AppBar(
-          automaticallyImplyLeading: false,
-          title: Row(
-            children: [
-              IconButton(
-                icon: const Icon(Icons.arrow_back),
-                onPressed: () async {
-                  if (!mounted) return;
-                  await _showExitReportAndFinish();
-                },
-              ),
-              const SizedBox(width: 8),
-              const Text(
-                'Муушиг',
-                style: TextStyle(fontWeight: FontWeight.bold),
-              ),
-              const Spacer(),
-              ElevatedButton(
-                onPressed: _showPlayerActionInfo,
-                style: ElevatedButton.styleFrom(
-                  minimumSize: const Size(36, 36),
-                  padding: EdgeInsets.zero,
-                ),
-                child: const Icon(Icons.remove, size: 20),
-              ),
-              const SizedBox(width: 4),
-              Text('Тоглогч: ${_seats.length}',
-                  style: const TextStyle(fontSize: 16)),
-              const SizedBox(width: 4),
-              ElevatedButton(
-                onPressed: _showPlayerActionInfo,
-                style: ElevatedButton.styleFrom(
-                  minimumSize: const Size(36, 36),
-                  padding: EdgeInsets.zero,
-                ),
-                child: const Icon(Icons.add, size: 20),
-              ),
-              const SizedBox(width: 8),
-              ElevatedButton(
-                onPressed: null,
-                style: ElevatedButton.styleFrom(
-                  minimumSize: const Size(36, 36),
-                  padding: const EdgeInsets.symmetric(horizontal: 12),
-                ),
-                child: Text(
-                  _isBoltMode
-                      ? (_isMiddleBoltMode
-                          ? 'Дундын боолт №$_roundNumber'
-                          : 'Боолт №$_roundNumber')
-                      : 'Тоглолтын №$_roundNumber',
-                  style: const TextStyle(fontSize: 16),
-                ),
-              ),
-              const SizedBox(width: 8),
-              if (_canTransferRegistrar)
-                IconButton(
-                  tooltip: 'Тоглолт бүртгэх эрх шилжүүлэх',
-                  onPressed: _transferRegistrarRole,
-                  icon: const Icon(Icons.keyboard),
-                ),
-              IconButton(
-                icon: const Icon(Icons.settings),
-                onPressed: _showMuushigSettingsDialog,
-              ),
-            ],
+        appBar: UnifiedGameAppBar(
+          currentUserId: widget.currentUserId,
+          canManageGames: widget.canManageGames,
+          title: Text(
+            (() {
+              final isMulti = widget.multiWinsByUserId != null;
+              final roundLabel = isMulti
+                  ? 'Төрөл ${widget.multiCurrentTypeNumber ?? _roundNumber}/${widget.multiTotalTypeCount ?? _roundNumber}'
+                  : 'Тоглолтын №$_roundNumber';
+              return _isBoltMode
+                  ? (_isMiddleBoltMode
+                      ? 'Муушиг  |  Дундын боолт №$_roundNumber'
+                      : 'Муушиг  |  Боолт №$_roundNumber')
+                  : 'Муушиг  |  $roundLabel';
+            })(),
+            style: const TextStyle(fontWeight: FontWeight.bold),
           ),
-          elevation: 0,
-          backgroundColor: const Color(0xFFE7DDD4),
-          foregroundColor: Colors.black87,
+          onBack: () async {
+            if (Navigator.of(context).canPop()) {
+              Navigator.of(context).pop();
+              return;
+            }
+            final selectedUserIds = _seats
+                .map((seat) => seat.userId)
+                .whereType<String>()
+                .where((id) => id.isNotEmpty)
+                .toList(growable: false);
+            if (!mounted) return;
+            Navigator.of(context).pushReplacement(
+              MaterialPageRoute(
+                builder: (context) => KindsOfGamePage(
+                  selectedUserIds: selectedUserIds,
+                  playingFormat:
+                      widget.multiWinsByUserId != null ? 'multi' : 'single',
+                ),
+              ),
+            );
+          },
+          onRemovePlayer: _showPlayerActionInfo,
+          onAddPlayer: _showPlayerActionInfo,
+          onSave: _saveProgress,
+          onStatistics: _openStatisticsDashboard,
+          onReport: _showExitReportAndFinish,
+          onPrint: _printSessionReport,
+          onSettings: _showMuushigSettingsDialog,
+          onExit: () async {
+            if (!mounted) return;
+            if (widget.autoReturnOnWinner) {
+              Navigator.of(context).pop();
+              return;
+            }
+            await _showExitReportAndFinish();
+          },
+          extraActions: [
+            IconButton(
+              tooltip: _canTransferRegistrar
+                  ? 'Тоглолт бүртгэх эрх шилжүүлэх'
+                  : 'Бүртгэл хөтлөгчийн эрх шилжүүлэх боломжгүй',
+              onPressed: _canTransferRegistrar ? _transferRegistrarRole : null,
+              icon: Opacity(
+                opacity: _canTransferRegistrar ? 1 : 0.45,
+                child: Image.asset(
+                  'assets/buttons/keyboard.png',
+                  width: 22,
+                  height: 22,
+                  fit: BoxFit.contain,
+                ),
+              ),
+            ),
+          ],
         ),
         body: Padding(
           padding: const EdgeInsets.fromLTRB(12, 8, 12, 10),

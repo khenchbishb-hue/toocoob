@@ -1,6 +1,7 @@
 {
   "projects": {
-    "staging": "device-streaming-80288df4"
+    "staging": "device-streaming-80288df4",
+    "default": "toocoob"
   },
   "targets": {},
   "etags": {}

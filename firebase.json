@@ -1,4 +1,7 @@
 {
+  "functions": {
+    "source": "functions"
+  },
   "hosting": {
     "public": "build/web",
     "ignore": [
@@ -35,5 +38,13 @@
         }
       }
     }
+  },
+  "emulators": {
+    "dataconnect": {
+      "dataDir": "dataconnect/.dataconnect/pgliteData"
+    }
+  },
+  "dataconnect": {
+    "source": "dataconnect"
   }
 }

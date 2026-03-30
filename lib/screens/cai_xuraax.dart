@@ -1,4 +1,5 @@
 import 'package:flutter/material.dart';
+import 'package:toocoob/widgets/unified_game_app_bar.dart';
 
 class CaiXuraaxPage extends StatelessWidget {
   const CaiXuraaxPage({super.key});
@@ -6,9 +7,8 @@ class CaiXuraaxPage extends StatelessWidget {
   @override
   Widget build(BuildContext context) {
     return Scaffold(
-      appBar: AppBar(
+      appBar: UnifiedGameAppBar(
         title: const Text('Цай хураах'),
-        elevation: 0,
       ),
       body: const Center(
         child: Text('Цай хураах'),

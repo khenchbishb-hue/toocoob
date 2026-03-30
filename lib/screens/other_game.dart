@@ -1,4 +1,5 @@
 import 'package:flutter/material.dart';
+import 'package:toocoob/widgets/unified_game_app_bar.dart';
 
 class OtherGamePage extends StatelessWidget {
   const OtherGamePage({super.key});
@@ -6,9 +7,8 @@ class OtherGamePage extends StatelessWidget {
   @override
   Widget build(BuildContext context) {
     return Scaffold(
-      appBar: AppBar(
+      appBar: UnifiedGameAppBar(
         title: const Text('Бусад тоглоом'),
-        elevation: 0,
       ),
       body: const Center(
         child: Text('Бусад тоглоом'),

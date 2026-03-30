@@ -185,8 +185,14 @@ class _LoginScreenState extends State<LoginScreen> {
         context,
         MaterialPageRoute(
           builder: (context) => !kIsWeb && Platform.isIOS
-              ? const PlayerSelectionPageIOS(isAdmin: true)
-              : const PlayerSelectionPage(isAdmin: true),
+              ? const PlayerSelectionPageIOS(
+                  isAdmin: true,
+                  resetOwnedActiveTablesOnOpen: true,
+                )
+              : const PlayerSelectionPage(
+                  isAdmin: true,
+                  resetOwnedActiveTablesOnOpen: true,
+                ),
         ),
       );
     } else {
@@ -240,7 +246,35 @@ class _LoginScreenState extends State<LoginScreen> {
         }
 
         final docId = userDoc.id;
+        final canManageGames = userData['canManageGames'] == true;
         print('[LOGIN] User authenticated successfully with ID: $docId');
+        if (canManageGames) {
+          ScaffoldMessenger.of(context).showSnackBar(
+            const SnackBar(
+              content: Text('Тоглоомын бүртгэл хөтлөх эрхтэйгээр нэвтэрлээ.'),
+            ),
+          );
+          Navigator.push(
+            context,
+            MaterialPageRoute(
+              builder: (context) => !kIsWeb && Platform.isIOS
+                  ? PlayerSelectionPageIOS(
+                      isAdmin: false,
+                      currentUserId: docId,
+                      canManageGames: true,
+                      resetOwnedActiveTablesOnOpen: true,
+                    )
+                  : PlayerSelectionPage(
+                      isAdmin: false,
+                      currentUserId: docId,
+                      canManageGames: true,
+                      resetOwnedActiveTablesOnOpen: true,
+                    ),
+            ),
+          );
+          return;
+        }
+
         Navigator.push(
           context,
           MaterialPageRoute(

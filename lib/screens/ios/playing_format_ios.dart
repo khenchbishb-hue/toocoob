@@ -1,25 +1,51 @@
 import 'package:flutter/material.dart';
 import 'kinds_of_game_ios.dart';
 
-class PlayingFormatPageIOS extends StatelessWidget {
-  const PlayingFormatPageIOS({super.key, required this.selectedUserIds});
+class PlayingFormatPageIOS extends StatefulWidget {
+  const PlayingFormatPageIOS({
+    super.key,
+    required this.selectedUserIds,
+    this.currentUserId,
+    this.canManageGames = false,
+  });
 
   final List<String> selectedUserIds;
+  final String? currentUserId;
+  final bool canManageGames;
 
+  @override
+  State<PlayingFormatPageIOS> createState() => _PlayingFormatPageIOSState();
+}
+
+class _PlayingFormatPageIOSState extends State<PlayingFormatPageIOS> {
   @override
   Widget build(BuildContext context) {
     return Scaffold(
       appBar: AppBar(
         leading: IconButton(
-          icon: const Icon(Icons.arrow_back),
+          tooltip: 'Буцах',
+          icon: Image.asset(
+            'assets/buttons/back.png',
+            width: 24,
+            height: 24,
+            fit: BoxFit.contain,
+          ),
           onPressed: () => Navigator.of(context).pop(),
         ),
         title: const Text('Тоглолтын хэлбэр'),
         elevation: 0,
         actions: [
           TextButton.icon(
-            icon: const Icon(Icons.arrow_back, color: Colors.white, size: 18),
-            label: const Text('Буцах', style: TextStyle(color: Colors.white, fontSize: 14)),
+            icon: Image.asset(
+              'assets/buttons/back.png',
+              width: 18,
+              height: 18,
+              fit: BoxFit.contain,
+            ),
+            label: const Text(
+              'Буцах',
+              style: TextStyle(color: Colors.white, fontSize: 14),
+            ),
             onPressed: () => Navigator.of(context).pop(),
           ),
           const SizedBox(width: 8),
@@ -82,7 +108,9 @@ class PlayingFormatPageIOS extends StatelessWidget {
               context,
               MaterialPageRoute(
                 builder: (context) => KindsOfGamePageIOS(
-                  selectedUserIds: selectedUserIds,
+                  selectedUserIds: widget.selectedUserIds,
+                  currentUserId: widget.currentUserId,
+                  canManageGames: widget.canManageGames,
                 ),
               ),
             );

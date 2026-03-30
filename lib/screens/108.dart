@@ -1,7 +1,14 @@
 import 'package:flutter/material.dart';
 import 'package:cloud_firestore/cloud_firestore.dart';
+import 'package:pdf/widgets.dart' as pw;
+import 'package:printing/printing.dart';
+import 'package:share_plus/share_plus.dart';
+import 'package:toocoob/screens/kinds_of_game.dart';
 import 'package:toocoob/screens/player_selection_page.dart';
 import 'package:toocoob/utils/game_registrar_transfer.dart';
+import 'package:toocoob/utils/active_tables_repository.dart';
+import 'package:toocoob/utils/saved_game_sessions_repository.dart';
+import 'package:toocoob/widgets/unified_game_app_bar.dart';
 
 class Game108Page extends StatefulWidget {
   const Game108Page({
@@ -9,17 +16,30 @@ class Game108Page extends StatefulWidget {
     this.selectedUserIds = const [],
     this.currentUserId,
     this.canManageGames = false,
+    this.initialSavedSessionId,
+    this.autoReturnOnWinner = false,
+    this.multiWinsByUserId,
+    this.multiCurrentTypeNumber,
+    this.multiTotalTypeCount,
   });
 
   final List<String> selectedUserIds;
   final String? currentUserId;
   final bool canManageGames;
+  final String? initialSavedSessionId;
+  final bool autoReturnOnWinner;
+  final Map<String, int>? multiWinsByUserId;
+  final int? multiCurrentTypeNumber;
+  final int? multiTotalTypeCount;
 
   @override
   State<Game108Page> createState() => _Game108PageState();
 }
 
 class _Game108PageState extends State<Game108Page> {
+  final SavedGameSessionsRepository _savedSessionsRepo =
+      SavedGameSessionsRepository();
+  final ActiveTablesRepository _activeTablesRepo = ActiveTablesRepository();
   int _roundNumber = 1;
   static const int _targetWinnerScore = 108;
   static const Color _tableOrange = Color(0xFFE67E22);
@@ -34,6 +54,8 @@ class _Game108PageState extends State<Game108Page> {
   final Map<String, TextEditingController> _scoreInputControllers = {};
   final Map<String, FocusNode> _scoreInputFocusNodes = {};
   String? _currentRegistrarUserId;
+  String? _activeSavedSessionId;
+  bool _multiAutoReturnTriggered = false;
 
   bool get _canTransferRegistrar =>
       widget.canManageGames &&
@@ -56,6 +78,7 @@ class _Game108PageState extends State<Game108Page> {
     _orderedSeats = _activeSeatsFrom(_seats);
     _syncScoreInputs(_orderedSeats);
     _ensureFocusOnActiveScoreField();
+    _tryRestoreSavedSession();
     if (_selectedUserIdsSnapshot.isNotEmpty) {
       _selectedProfilesLoaded = false;
       _loadSelectedUserProfiles();
@@ -64,6 +87,92 @@ class _Game108PageState extends State<Game108Page> {
         _showPlayerOrderDialogIfNeeded();
       });
     }
+  }
+
+  Map<String, dynamic> _seatToJson(_Game108Seat s) => {
+        'displayName': s.displayName,
+        'username': s.username,
+        'score': s.score,
+        'wins': s.wins,
+        'money': s.money,
+        'roundScore': s.roundScore,
+        'isEliminated': s.isEliminated,
+        'userId': s.userId,
+        'photoUrl': s.photoUrl,
+      };
+
+  _Game108Seat _seatFromJson(Map<String, dynamic> j) => _Game108Seat(
+        displayName: (j['displayName'] ?? '').toString(),
+        username: (j['username'] ?? '').toString(),
+        score: (j['score'] as num? ?? 0).toInt(),
+        wins: (j['wins'] as num? ?? 0).toInt(),
+        money: (j['money'] as num? ?? 0).toInt(),
+        roundScore: (j['roundScore'] as num? ?? 0).toInt(),
+        isEliminated: j['isEliminated'] == true,
+        userId: (j['userId'] ?? '').toString().isEmpty
+            ? null
+            : (j['userId'] ?? '').toString(),
+        photoUrl: (j['photoUrl'] ?? '').toString().isEmpty
+            ? null
+            : (j['photoUrl'] ?? '').toString(),
+      );
+
+  Future<void> _tryRestoreSavedSession() async {
+    final id = widget.initialSavedSessionId;
+    if (id == null || id.isEmpty) return;
+    final saved = await _savedSessionsRepo.findById(id);
+    if (saved == null || !mounted) return;
+    final p = saved.payload;
+
+    final seatsRaw = (p['seats'] as List? ?? const <dynamic>[])
+        .whereType<Map>()
+        .map((e) => _seatFromJson(Map<String, dynamic>.from(e)))
+        .toList();
+    final orderedRaw = (p['orderedSeats'] as List? ?? const <dynamic>[])
+        .whereType<Map>()
+        .map((e) => _seatFromJson(Map<String, dynamic>.from(e)))
+        .toList();
+
+    setState(() {
+      _activeSavedSessionId = saved.id;
+      _roundNumber = (p['roundNumber'] as num? ?? _roundNumber).toInt();
+      if (seatsRaw.isNotEmpty) _seats = seatsRaw;
+      if (orderedRaw.isNotEmpty) _orderedSeats = orderedRaw;
+      _restingSeatKeys
+        ..clear()
+        ..addAll((p['restingSeatKeys'] as List? ?? const <dynamic>[])
+            .map((e) => e.toString()));
+      _roundSubmittedSeatKeys
+        ..clear()
+        ..addAll((p['roundSubmittedSeatKeys'] as List? ?? const <dynamic>[])
+            .map((e) => e.toString()));
+      _syncScoreInputs(_orderedSeats);
+    });
+  }
+
+  Future<void> _saveProgress() async {
+    final payload = {
+      'roundNumber': _roundNumber,
+      'seats': _seats.map(_seatToJson).toList(),
+      'orderedSeats': _orderedSeats.map(_seatToJson).toList(),
+      'restingSeatKeys': _restingSeatKeys.toList(),
+      'roundSubmittedSeatKeys': _roundSubmittedSeatKeys.toList(),
+    };
+    final id = await _savedSessionsRepo.saveOrUpdate(
+      sessionId: _activeSavedSessionId,
+      gameKey: 'game108',
+      gameLabel: '108',
+      selectedUserIds: List<String>.from(widget.selectedUserIds),
+      payload: payload,
+    );
+    _activeSavedSessionId = id;
+  }
+
+  Future<void> _removeSavedProgressIfAny() async {
+    final id = _activeSavedSessionId;
+    if (id == null || id.isEmpty) return;
+    await _savedSessionsRepo.removeById(id);
+    _activeSavedSessionId = null;
   }
 
   Future<void> _transferRegistrarRole() async {
@@ -216,16 +325,20 @@ class _Game108PageState extends State<Game108Page> {
       if (!force && hasFocusedScoring) return;
 
       final targetKey = scoringKeys.first;
-      final targetNode = _scoreInputFocusNodes[targetKey];
-      final targetController = _scoreInputControllers[targetKey];
-      if (targetNode == null || targetController == null) return;
-
-      targetNode.requestFocus();
-      targetController.selection = TextSelection(
-        baseOffset: 0,
-        extentOffset: targetController.text.length,
-      );
+      _requestScoreFocusForKey(targetKey);
     });
+  }
+
+  void _requestScoreFocusForKey(String key) {
+    final targetNode = _scoreInputFocusNodes[key];
+    final targetController = _scoreInputControllers[key];
+    if (targetNode == null || targetController == null) return;
+
+    targetNode.requestFocus();
+    targetController.selection = TextSelection(
+      baseOffset: 0,
+      extentOffset: targetController.text.length,
+    );
   }
 
   List<_Game108Seat> _rebuildOrderedSeats(List<_Game108Seat> source) {
@@ -383,7 +496,7 @@ class _Game108PageState extends State<Game108Page> {
     if (currentRoundIndex != -1 &&
         currentRoundIndex + 1 < roundInputCandidates.length) {
       final nextKey = _seatKey(roundInputCandidates[currentRoundIndex + 1]);
-      _scoreInputFocusNodes[nextKey]?.requestFocus();
+      _requestScoreFocusForKey(nextKey);
       return;
     }
 
@@ -391,6 +504,20 @@ class _Game108PageState extends State<Game108Page> {
   }
 
   Future<void> _handleWinner(_Game108Seat winner) async {
+    if (widget.autoReturnOnWinner && !_multiAutoReturnTriggered) {
+      _multiAutoReturnTriggered = true;
+      final winnerUserId = winner.userId;
+      WidgetsBinding.instance.addPostFrameCallback((_) {
+        if (!mounted) return;
+        Navigator.of(context).pop(<String, dynamic>{
+          'completedGame': 'game108',
+          if (winnerUserId != null && winnerUserId.isNotEmpty)
+            'winnerUserId': winnerUserId,
+        });
+      });
+      return;
+    }
+
     final winnerKey = _seatKey(winner);
 
     setState(() {
@@ -436,6 +563,7 @@ class _Game108PageState extends State<Game108Page> {
     );
 
     await _askRegistrarDecisionAtGameEndIfNeeded();
+    await _removeSavedProgressIfAny();
 
     WidgetsBinding.instance.addPostFrameCallback((_) {
       _showPlayerOrderDialogIfNeeded();
@@ -492,8 +620,23 @@ class _Game108PageState extends State<Game108Page> {
 
   Future<void> _showPlayerOrderDialogIfNeeded() async {
     if (!mounted || _playerOrderSelected || !_selectedProfilesLoaded) return;
+    // Skip if restoring from saved session
+    if (widget.initialSavedSessionId != null &&
+        widget.initialSavedSessionId!.isNotEmpty) {
+      return;
+    }
 
     final activeSeats = _activeSeatsFrom(_seats);
+    if (activeSeats.length <= 2) {
+      setState(() {
+        _orderedSeats = activeSeats;
+        _playerOrderSelected = true;
+        _initializeRestingByOrder();
+        _syncScoreInputs(_orderedSeats);
+      });
+      _ensureFocusOnActiveScoreField(force: true);
+      return;
+    }
     if (activeSeats.length < 2) return;
 
     final cappedSeats = activeSeats.take(7).toList();
@@ -786,6 +929,13 @@ class _Game108PageState extends State<Game108Page> {
       (removeIndices) {
         if (removeIndices.isEmpty) return;
 
+        final removeUserIds = removeIndices
+            .where((i) => i >= 0 && i < currentPlayers.length)
+            .map((i) => currentPlayers[i].userId)
+            .whereType<String>()
+            .where((id) => id.isNotEmpty)
+            .toList(growable: false);
+
         setState(() {
           final removeKeys = removeIndices
               .where((i) => i >= 0 && i < currentPlayers.length)
@@ -813,6 +963,13 @@ class _Game108PageState extends State<Game108Page> {
           _orderedSeats = _rebuildOrderedSeats(_seats);
           _syncScoreInputs(_orderedSeats);
         });
+
+        if (removeUserIds.isNotEmpty) {
+          Future.microtask(
+            () =>
+                _activeTablesRepo.releasePlayersFromActiveTables(removeUserIds),
+          );
+        }
         _ensureFocusOnActiveScoreField(force: true);
       },
     );
@@ -1168,6 +1325,7 @@ class _Game108PageState extends State<Game108Page> {
                 controller: _scoreInputControllers[seatKey],
                 focusNode: _scoreInputFocusNodes[seatKey],
                 textAlign: TextAlign.center,
+                textInputAction: TextInputAction.next,
                 keyboardType: const TextInputType.numberWithOptions(
                   signed: true,
                   decimal: false,
@@ -1694,6 +1852,35 @@ class _Game108PageState extends State<Game108Page> {
                 ),
               ),
             ),
+            if (widget.multiWinsByUserId != null)
+              Positioned(
+                right: 6,
+                top: 6,
+                child: Container(
+                  padding:
+                      const EdgeInsets.symmetric(horizontal: 8, vertical: 4),
+                  decoration: BoxDecoration(
+                    color: Colors.black.withOpacity(0.55),
+                    borderRadius: BorderRadius.circular(14),
+                  ),
+                  child: Row(
+                    mainAxisSize: MainAxisSize.min,
+                    children: [
+                      const Icon(Icons.emoji_events,
+                          color: Colors.amber, size: 16),
+                      const SizedBox(width: 4),
+                      Text(
+                        '${widget.multiWinsByUserId?[seat.userId ?? ''] ?? 0}',
+                        style: const TextStyle(
+                          color: Colors.white,
+                          fontSize: 13,
+                          fontWeight: FontWeight.w800,
+                        ),
+                      ),
+                    ],
+                  ),
+                ),
+              ),
           ],
         ),
       ),
@@ -1750,71 +1937,227 @@ class _Game108PageState extends State<Game108Page> {
     );
   }
 
+  Future<void> _showSessionSummaryDialog() async {
+    final activeSeats = _orderedSeats.isNotEmpty
+        ? _orderedSeats
+        : _activeSeatsFrom(_seats)
+            .where((seat) => seat.userId != null)
+            .toList();
+
+    await showDialog<void>(
+      context: context,
+      builder: (dialogContext) {
+        return AlertDialog(
+          title: const Text('Тоглолтын тайлан'),
+          content: SizedBox(
+            width: 620,
+            child: SingleChildScrollView(
+              child: Column(
+                mainAxisSize: MainAxisSize.min,
+                crossAxisAlignment: CrossAxisAlignment.start,
+                children: [
+                  const Text('108 - ТОГЛОЛТЫН ТАЙЛАН'),
+                  const SizedBox(height: 8),
+                  Text('Нийт раунд: $_roundNumber'),
+                  Text('Нийт тоглогч: ${activeSeats.length}'),
+                  const SizedBox(height: 10),
+                  ...List.generate(activeSeats.length, (index) {
+                    final seat = activeSeats[index];
+                    return ListTile(
+                      contentPadding: EdgeInsets.zero,
+                      leading: CircleAvatar(
+                        radius: 20,
+                        backgroundImage:
+                            seat.photoUrl != null && seat.photoUrl!.isNotEmpty
+                                ? (seat.photoUrl!.startsWith('http')
+                                    ? NetworkImage(seat.photoUrl!)
+                                    : AssetImage('assets/${seat.photoUrl!}')
+                                        as ImageProvider)
+                                : null,
+                        child: seat.photoUrl == null || seat.photoUrl!.isEmpty
+                            ? const Icon(Icons.person)
+                            : null,
+                      ),
+                      title: Text('${index + 1}. ${seat.displayName}'),
+                      subtitle: Text('@${seat.username}'),
+                      trailing: Text('₮${seat.money}'),
+                    );
+                  }),
+                ],
+              ),
+            ),
+          ),
+          actions: [
+            TextButton.icon(
+              onPressed: _shareSessionReport,
+              icon: Image.asset(
+                'assets/buttons/send.png',
+                width: 18,
+                height: 18,
+                fit: BoxFit.contain,
+              ),
+              label: const Text('Илгээх'),
+            ),
+            TextButton.icon(
+              onPressed: _printSessionReport,
+              icon: Image.asset(
+                'assets/buttons/print.png',
+                width: 18,
+                height: 18,
+                fit: BoxFit.contain,
+              ),
+              label: const Text('Хэвлэх'),
+            ),
+            TextButton.icon(
+              onPressed: () => Navigator.of(dialogContext).pop(),
+              icon: Image.asset(
+                'assets/buttons/back.png',
+                width: 18,
+                height: 18,
+                fit: BoxFit.contain,
+              ),
+              label: const Text('Буцах'),
+            ),
+            FilledButton.icon(
+              onPressed: () async {
+                await _askRegistrarDecisionAtGameEndIfNeeded();
+                await _removeSavedProgressIfAny();
+                if (!mounted) return;
+                Navigator.of(dialogContext).pop();
+                Navigator.of(context).pushAndRemoveUntil(
+                  MaterialPageRoute(
+                    builder: (context) => const PlayerSelectionPage(),
+                  ),
+                  (route) => false,
+                );
+              },
+              icon: Image.asset(
+                'assets/buttons/exit.webp',
+                width: 18,
+                height: 18,
+                fit: BoxFit.contain,
+              ),
+              label: const Text('Дуусгах'),
+            ),
+          ],
+        );
+      },
+    );
+  }
+
+  String _buildSessionReportText() {
+    final activeSeats = _orderedSeats.isNotEmpty
+        ? _orderedSeats
+        : _activeSeatsFrom(_seats)
+            .where((seat) => seat.userId != null)
+            .toList();
+
+    final lines = <String>[
+      '108 - ТОГЛОЛТЫН ТАЙЛАН',
+      'Нийт раунд: $_roundNumber',
+      'Нийт тоглогч: ${activeSeats.length}',
+      '',
+      'Тоглогчдын дүн:',
+    ];
+    for (int i = 0; i < activeSeats.length; i++) {
+      final seat = activeSeats[i];
+      lines.add(
+          '${i + 1}. ${seat.displayName} (@${seat.username}) - ₮${seat.money}');
+    }
+    return lines.join('\n');
+  }
+
+  Future<void> _shareSessionReport() async {
+    try {
+      await SharePlus.instance.share(
+        ShareParams(
+          text: _buildSessionReportText(),
+          subject: '108 - тоглолтын тайлан',
+        ),
+      );
+    } catch (_) {
+      if (!mounted) return;
+      ScaffoldMessenger.of(context).showSnackBar(
+        const SnackBar(content: Text('Илгээх үйлдэл амжилтгүй.')),
+      );
+    }
+  }
+
+  Future<void> _printSessionReport() async {
+    try {
+      final doc = pw.Document();
+      doc.addPage(
+        pw.Page(
+          build: (_) => pw.Text(_buildSessionReportText()),
+        ),
+      );
+      await Printing.layoutPdf(onLayout: (_) async => doc.save());
+    } catch (_) {
+      if (!mounted) return;
+      ScaffoldMessenger.of(context).showSnackBar(
+        const SnackBar(content: Text('Хэвлэх цонх нээгдсэнгүй.')),
+      );
+    }
+  }
+
   @override
   Widget build(BuildContext context) {
     return Scaffold(
       backgroundColor: _tableOrange,
-      appBar: AppBar(
-        automaticallyImplyLeading: false,
-        title: Row(
-          children: [
-            IconButton(
-              icon: const Icon(Icons.arrow_back),
-              onPressed: () => Navigator.of(context).maybePop(),
-            ),
-            const SizedBox(width: 8),
-            const Text(
-              '108',
-              style: TextStyle(fontWeight: FontWeight.bold),
-            ),
-            const Spacer(),
-            ElevatedButton(
-              onPressed: _onRemovePlayerPressed,
-              style: ElevatedButton.styleFrom(
-                minimumSize: const Size(36, 36),
-                padding: EdgeInsets.zero,
-              ),
-              child: const Icon(Icons.remove, size: 20),
-            ),
-            const SizedBox(width: 4),
-            Text('Тоглогч: $_playerCount',
-                style: const TextStyle(fontSize: 16)),
-            const SizedBox(width: 4),
-            ElevatedButton(
-              onPressed: _onAddPlayerPressed,
-              style: ElevatedButton.styleFrom(
-                minimumSize: const Size(36, 36),
-                padding: EdgeInsets.zero,
-              ),
-              child: const Icon(Icons.add, size: 20),
-            ),
-            const SizedBox(width: 8),
-            ElevatedButton(
-              onPressed: null,
-              style: ElevatedButton.styleFrom(
-                minimumSize: const Size(36, 36),
-                padding: const EdgeInsets.symmetric(horizontal: 12),
-              ),
-              child: Text('Тоглолтын №$_roundNumber',
-                  style: const TextStyle(fontSize: 16)),
-            ),
-            const SizedBox(width: 8),
-            if (_canTransferRegistrar)
-              IconButton(
-                tooltip: 'Тоглолт бүртгэх эрх шилжүүлэх',
-                onPressed: _transferRegistrarRole,
-                icon: const Icon(Icons.keyboard),
-              ),
-            if (_canTransferRegistrar) const SizedBox(width: 8),
-            IconButton(
-              icon: const Icon(Icons.settings),
-              onPressed: _showSettingsDialog,
-            ),
-          ],
+      appBar: UnifiedGameAppBar(
+        currentUserId: widget.currentUserId,
+        canManageGames: widget.canManageGames,
+        title: Text(
+          widget.autoReturnOnWinner
+              ? '108'
+              : '108  |  ${widget.multiWinsByUserId != null ? 'Төрөл ${widget.multiCurrentTypeNumber ?? _roundNumber}/${widget.multiTotalTypeCount ?? _roundNumber}' : 'Тоглолтын №$_roundNumber'}',
+          style: const TextStyle(fontWeight: FontWeight.bold),
         ),
-        elevation: 0,
-        backgroundColor: const Color(0xFFE7DDD4),
-        foregroundColor: Colors.black87,
+        onBack: () {
+          if (Navigator.of(context).canPop()) {
+            Navigator.of(context).pop();
+            return;
+          }
+          final selectedUserIds = (_orderedSeats.isNotEmpty
+                  ? _orderedSeats
+                  : _activeSeatsFrom(_seats))
+              .map((seat) => seat.userId)
+              .whereType<String>()
+              .where((id) => id.isNotEmpty)
+              .toList(growable: false);
+          Navigator.of(context).pushReplacement(
+            MaterialPageRoute(
+              builder: (context) => KindsOfGamePage(
+                selectedUserIds: selectedUserIds,
+                playingFormat:
+                    widget.multiWinsByUserId != null ? 'multi' : 'single',
+              ),
+            ),
+          );
+        },
+        onRemovePlayer: _onRemovePlayerPressed,
+        onAddPlayer: _onAddPlayerPressed,
+        onSave: _saveProgress,
+        onReport: _showSessionSummaryDialog,
+        onSettings: _showSettingsDialog,
+        onExit: _showSessionSummaryDialog,
+        extraActions: [
+          IconButton(
+            tooltip: _canTransferRegistrar
+                ? 'Тоглолт бүртгэх эрх шилжүүлэх'
+                : 'Бүртгэл хөтлөгчийн эрх шилжүүлэх боломжгүй',
+            onPressed: _canTransferRegistrar ? _transferRegistrarRole : null,
+            icon: Opacity(
+              opacity: _canTransferRegistrar ? 1 : 0.45,
+              child: Image.asset(
+                'assets/buttons/keyboard.png',
+                width: 22,
+                height: 22,
+                fit: BoxFit.contain,
+              ),
+            ),
+          ),
+        ],
       ),
       body: Padding(
         padding: const EdgeInsets.fromLTRB(12, 8, 12, 10),

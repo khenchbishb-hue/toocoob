@@ -34,6 +34,7 @@ flutter:
   uses-material-design: true
   assets:
     - assets/logo.png
+    - assets/buttons/
     - assets/13.jpg
     - assets/5.jpg
     - assets/muushig.jpg

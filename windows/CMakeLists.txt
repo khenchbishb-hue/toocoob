@@ -2,6 +2,10 @@
 cmake_minimum_required(VERSION 3.14)
 project(toocoob LANGUAGES CXX)
 
+# Keep compatibility with third-party CMake projects that still declare
+# very old minimum versions (e.g. Firebase C++ SDK bundled by plugins).
+set(CMAKE_POLICY_VERSION_MINIMUM 3.5)
+
 # The name of the executable created for the application. Change this to change
 # the on-disk name of your application.
 set(BINARY_NAME "toocoob")

@@ -15,9 +15,16 @@ import '../cai_xuraax.dart';
 import '../other_game.dart';
 
 class KindsOfGamePageIOS extends StatelessWidget {
-  const KindsOfGamePageIOS({super.key, required this.selectedUserIds});
+  const KindsOfGamePageIOS({
+    super.key,
+    required this.selectedUserIds,
+    this.currentUserId,
+    this.canManageGames = false,
+  });
 
   final List<String> selectedUserIds;
+  final String? currentUserId;
+  final bool canManageGames;
 
   @override
   Widget build(BuildContext context) {
@@ -220,10 +227,18 @@ class KindsOfGamePageIOS extends StatelessWidget {
         page = const DurakPage();
         break;
       case 8:
-        page = const Game501Page();
+        page = Game501Page(
+          selectedUserIds: List<String>.from(selectedUserIds),
+          currentUserId: currentUserId,
+          canManageGames: canManageGames,
+        );
         break;
       case 9:
-        page = const CanastaPage();
+        page = CanastaPage(
+          selectedUserIds: List<String>.from(selectedUserIds),
+          currentUserId: currentUserId,
+          canManageGames: canManageGames,
+        );
         break;
       case 10:
         page = const CaiXuraaxPage();

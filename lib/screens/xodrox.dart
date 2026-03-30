@@ -2,21 +2,40 @@ import 'dart:math' as math;
 
 import 'package:cloud_firestore/cloud_firestore.dart';
 import 'package:flutter/material.dart';
+import 'package:pdf/widgets.dart' as pw;
+import 'package:printing/printing.dart';
+import 'package:share_plus/share_plus.dart';
 import 'player_selection_page.dart';
+import 'kinds_of_game.dart';
+import 'package:toocoob/utils/game_registrar_transfer.dart';
+import 'package:toocoob/utils/saved_game_sessions_repository.dart';
+import 'package:toocoob/widgets/unified_game_app_bar.dart';
 
 class HodrokhPage extends StatefulWidget {
   const HodrokhPage({
     super.key,
     this.selectedUserIds = const [],
+    this.currentUserId,
+    this.canManageGames = false,
+    this.initialSavedSessionId,
+    this.autoReturnOnWinner = false,
+    this.multiWinsByUserId,
   });
 
   final List<String> selectedUserIds;
+  final String? currentUserId;
+  final bool canManageGames;
+  final String? initialSavedSessionId;
+  final bool autoReturnOnWinner;
+  final Map<String, int>? multiWinsByUserId;
 
   @override
   State<HodrokhPage> createState() => _HodrokhPageState();
 }
 
 class _HodrokhPageState extends State<HodrokhPage> {
+  final SavedGameSessionsRepository _savedSessionsRepo =
+      SavedGameSessionsRepository();
   static const Color _tableColor = Color(0xFF1B4332);
   static const int _maxSlots = 8;
   static const int _maxTargetWins = 8;
@@ -33,15 +52,148 @@ class _HodrokhPageState extends State<HodrokhPage> {
 
   int _targetWins = 3;
   List<_TargetWinPlayer> _players = [];
+  String? _activeSavedSessionId;
+  String? _currentRegistrarUserId;
+  bool _registrarEndDecisionHandled = false;
+  bool _multiAutoReturnTriggered = false;
+
+  bool get _canTransferRegistrar =>
+      widget.canManageGames &&
+      widget.currentUserId != null &&
+      _currentRegistrarUserId == widget.currentUserId;
 
   @override
   void initState() {
     super.initState();
     _players = _buildInitialPlayers(widget.selectedUserIds);
+    _currentRegistrarUserId = widget.currentUserId;
+
+    _tryRestoreSavedSession();
 
     if (widget.selectedUserIds.isNotEmpty) {
       _loadSelectedUserProfiles();
     }
+  }
+
+  Future<void> _tryRestoreSavedSession() async {
+    final id = widget.initialSavedSessionId;
+    if (id == null || id.isEmpty) return;
+    final saved = await _savedSessionsRepo.findById(id);
+    if (saved == null || !mounted) return;
+
+    final payload = saved.payload;
+    final restoredTarget = (payload['targetWins'] as num?)?.toInt() ?? 3;
+    final rawPlayers = (payload['players'] as List? ?? const <dynamic>[]);
+    final restoredPlayers = rawPlayers
+        .whereType<Map>()
+        .map((e) => Map<String, dynamic>.from(e))
+        .map(
+          (e) => _TargetWinPlayer(
+            userId: (e['userId'] ?? '').toString().isEmpty
+                ? null
+                : (e['userId'] ?? '').toString(),
+            displayName: (e['displayName'] ?? '').toString(),
+            username: (e['username'] ?? '').toString(),
+            photoUrl: (e['photoUrl'] ?? '').toString().isEmpty
+                ? null
+                : (e['photoUrl'] ?? '').toString(),
+            wins: (e['wins'] as num? ?? 0).toInt(),
+          ),
+        )
+        .toList();
+
+    setState(() {
+      _activeSavedSessionId = saved.id;
+      _targetWins = restoredTarget.clamp(1, _maxTargetWins);
+      if (restoredPlayers.isNotEmpty) {
+        _players = restoredPlayers;
+      }
+    });
+  }
+
+  Future<void> _saveProgress() async {
+    final payload = {
+      'targetWins': _targetWins,
+      'players': _players
+          .map((p) => {
+                'userId': p.userId,
+                'displayName': p.displayName,
+                'username': p.username,
+                'photoUrl': p.photoUrl,
+                'wins': p.wins,
+              })
+          .toList(),
+    };
+    final id = await _savedSessionsRepo.saveOrUpdate(
+      sessionId: _activeSavedSessionId,
+      gameKey: 'xodrox',
+      gameLabel: 'Ходрох',
+      selectedUserIds: List<String>.from(widget.selectedUserIds),
+      payload: payload,
+    );
+    _activeSavedSessionId = id;
+  }
+
+  Future<void> _removeSavedProgressIfAny() async {
+    final id = _activeSavedSessionId;
+    if (id == null || id.isEmpty) return;
+    await _savedSessionsRepo.removeById(id);
+    _activeSavedSessionId = null;
+  }
+
+  Future<void> _transferRegistrarRole() async {
+    final registrarId = _currentRegistrarUserId;
+    if (!_canTransferRegistrar || registrarId == null || registrarId.isEmpty) {
+      return;
+    }
+
+    final playerUserIds = _players
+        .map((player) => player.userId)
+        .whereType<String>()
+        .where((id) => id.isNotEmpty)
+        .toList(growable: false);
+
+    final nextRegistrarUserId = await GameRegistrarTransfer.transfer(
+      context,
+      currentRegistrarUserId: registrarId,
+      playerUserIds: playerUserIds,
+    );
+
+    if (!mounted || nextRegistrarUserId == null) return;
+    setState(() {
+      _currentRegistrarUserId = nextRegistrarUserId;
+    });
+  }
+
+  Future<void> _askRegistrarDecisionAtGameEndIfNeeded() async {
+    final resolvedRegistrarUserId =
+        await GameRegistrarTransfer.resolveAtGameEnd(
+      context,
+      originalRegistrarUserId: widget.currentUserId,
+      currentRegistrarUserId: _currentRegistrarUserId,
+      playerUserIds: _players
+          .map((player) => player.userId)
+          .whereType<String>()
+          .where((id) => id.isNotEmpty)
+          .toList(growable: false),
+      displayNameForUserId: (userId) {
+        for (final player in _players) {
+          if (player.userId == userId) return player.displayName;
+        }
+        return 'Тоглогч';
+      },
+      usernameForUserId: (userId) {
+        for (final player in _players) {
+          if (player.userId == userId) return player.username;
+        }
+        return '';
+      },
+    );
+
+    if (!mounted || resolvedRegistrarUserId == null) return;
+    setState(() {
+      _currentRegistrarUserId = resolvedRegistrarUserId;
+    });
   }
 
   List<_TargetWinPlayer> _buildInitialPlayers(List<String> selectedUserIds) {
@@ -230,6 +382,31 @@ class _HodrokhPageState extends State<HodrokhPage> {
       final nextWins = (player.wins + delta).clamp(0, _targetWins);
       _players[index] = player.copyWith(wins: nextWins);
     });
+
+    final winner = _winner;
+    if (winner != null &&
+        widget.autoReturnOnWinner &&
+        !_multiAutoReturnTriggered) {
+      _multiAutoReturnTriggered = true;
+      WidgetsBinding.instance.addPostFrameCallback((_) {
+        if (!mounted) return;
+        final winnerUserId = winner.userId;
+        Navigator.of(context).pop(<String, dynamic>{
+          'completedGame': 'xodrox',
+          if (winnerUserId != null && winnerUserId.isNotEmpty)
+            'winnerUserId': winnerUserId,
+        });
+      });
+      return;
+    }
+
+    if (winner != null && !_registrarEndDecisionHandled) {
+      _registrarEndDecisionHandled = true;
+      _removeSavedProgressIfAny();
+      _askRegistrarDecisionAtGameEndIfNeeded();
+    } else if (winner == null) {
+      _registrarEndDecisionHandled = false;
+    }
   }
 
   _TargetWinPlayer? get _winner {
@@ -239,26 +416,205 @@ class _HodrokhPageState extends State<HodrokhPage> {
     return null;
   }
 
+  String _buildSessionReportText() {
+    final lines = <String>[
+      'ХОДРОХ - ТОГЛОЛТЫН ТАЙЛАН',
+      'Нийт тоглогч: ${_players.length}',
+      'Хожлын босго: $_targetWins',
+      '',
+      'Тоглогчдын дүн:',
+    ];
+    for (int i = 0; i < _players.length; i++) {
+      final p = _players[i];
+      lines.add('${i + 1}. ${p.displayName} (@${p.username}) - ⭐ ${p.wins}');
+    }
+    return lines.join('\n');
+  }
+
+  Future<void> _shareSessionReport() async {
+    try {
+      await SharePlus.instance.share(
+        ShareParams(
+          text: _buildSessionReportText(),
+          subject: 'Ходрох - тоглолтын тайлан',
+        ),
+      );
+    } catch (_) {
+      if (!mounted) return;
+      ScaffoldMessenger.of(context).showSnackBar(
+        const SnackBar(content: Text('Илгээх үйлдэл амжилтгүй.')),
+      );
+    }
+  }
+
+  Future<void> _printSessionReport() async {
+    try {
+      final doc = pw.Document();
+      doc.addPage(
+        pw.Page(
+          build: (_) => pw.Text(_buildSessionReportText()),
+        ),
+      );
+      await Printing.layoutPdf(onLayout: (_) async => doc.save());
+    } catch (_) {
+      if (!mounted) return;
+      ScaffoldMessenger.of(context).showSnackBar(
+        const SnackBar(content: Text('Хэвлэх цонх нээгдсэнгүй.')),
+      );
+    }
+  }
+
+  Future<void> _showSessionSummaryDialog() async {
+    await showDialog<void>(
+      context: context,
+      builder: (dialogContext) {
+        return AlertDialog(
+          title: const Text('Тоглолтын тайлан'),
+          content: SizedBox(
+            width: 560,
+            child: SingleChildScrollView(
+              child: Column(
+                mainAxisSize: MainAxisSize.min,
+                crossAxisAlignment: CrossAxisAlignment.start,
+                children: [
+                  const Text('ХОДРОХ - ТОГЛОЛТЫН ТАЙЛАН'),
+                  const SizedBox(height: 8),
+                  Text('Нийт тоглогч: ${_players.length}'),
+                  Text('Хожлын босго: $_targetWins'),
+                  const SizedBox(height: 10),
+                  ...List.generate(_players.length, (index) {
+                    final player = _players[index];
+                    return ListTile(
+                      contentPadding: EdgeInsets.zero,
+                      leading: CircleAvatar(
+                        radius: 20,
+                        backgroundImage: player.photoUrl != null &&
+                                player.photoUrl!.isNotEmpty
+                            ? NetworkImage(player.photoUrl!)
+                            : null,
+                        child:
+                            player.photoUrl == null || player.photoUrl!.isEmpty
+                                ? const Icon(Icons.person)
+                                : null,
+                      ),
+                      title: Text('${index + 1}. ${player.displayName}'),
+                      subtitle: Text('@${player.username}'),
+                      trailing: Text('⭐ ${player.wins}'),
+                    );
+                  }),
+                ],
+              ),
+            ),
+          ),
+          actions: [
+            TextButton.icon(
+              onPressed: _shareSessionReport,
+              icon: Image.asset(
+                'assets/buttons/send.png',
+                width: 18,
+                height: 18,
+                fit: BoxFit.contain,
+              ),
+              label: const Text('Илгээх'),
+            ),
+            TextButton.icon(
+              onPressed: _printSessionReport,
+              icon: Image.asset(
+                'assets/buttons/print.png',
+                width: 18,
+                height: 18,
+                fit: BoxFit.contain,
+              ),
+              label: const Text('Хэвлэх'),
+            ),
+            TextButton.icon(
+              onPressed: () => Navigator.of(dialogContext).pop(),
+              icon: Image.asset(
+                'assets/buttons/back.png',
+                width: 18,
+                height: 18,
+                fit: BoxFit.contain,
+              ),
+              label: const Text('Буцах'),
+            ),
+            FilledButton.icon(
+              onPressed: () async {
+                await _askRegistrarDecisionAtGameEndIfNeeded();
+                await _removeSavedProgressIfAny();
+                if (!mounted) return;
+                Navigator.of(dialogContext).pop();
+                Navigator.of(context).pushAndRemoveUntil(
+                  MaterialPageRoute(
+                    builder: (context) => const PlayerSelectionPage(),
+                  ),
+                  (route) => false,
+                );
+              },
+              icon: Image.asset(
+                'assets/buttons/exit.webp',
+                width: 18,
+                height: 18,
+                fit: BoxFit.contain,
+              ),
+              label: const Text('Дуусгах'),
+            ),
+          ],
+        );
+      },
+    );
+  }
+
   @override
   Widget build(BuildContext context) {
     final winner = _winner;
 
     return Scaffold(
       backgroundColor: _tableColor,
-      appBar: AppBar(
+      appBar: UnifiedGameAppBar(
         title: const Text('Ходрох'),
-        elevation: 0,
-        actions: [
+        currentUserId: widget.currentUserId,
+        canManageGames: widget.canManageGames,
+        onBack: () {
+          if (Navigator.of(context).canPop()) {
+            Navigator.of(context).pop();
+            return;
+          }
+          final selectedUserIds = _players
+              .map((player) => player.userId)
+              .whereType<String>()
+              .where((id) => id.isNotEmpty)
+              .toList(growable: false);
+          Navigator.of(context).pushReplacement(
+            MaterialPageRoute(
+              builder: (context) => KindsOfGamePage(
+                selectedUserIds: selectedUserIds,
+                playingFormat:
+                    widget.multiWinsByUserId != null ? 'multi' : 'single',
+              ),
+            ),
+          );
+        },
+        onRemovePlayer: _players.isEmpty ? null : _showRemovePlayersDialog,
+        onAddPlayer:
+            _players.length >= _maxSlots ? null : _addPlayerFromSelection,
+        onSave: _saveProgress,
+        onReport: _showSessionSummaryDialog,
+        onExit: _showSessionSummaryDialog,
+        extraActions: [
           IconButton(
-            tooltip: 'Тоглогч хасах',
-            onPressed: _players.isEmpty ? null : _showRemovePlayersDialog,
-            icon: const Icon(Icons.person_remove_alt_1),
-          ),
-          IconButton(
-            tooltip: 'Тоглогч нэмэх',
-            onPressed:
-                _players.length >= _maxSlots ? null : _addPlayerFromSelection,
-            icon: const Icon(Icons.person_add_alt_1),
+            tooltip: _canTransferRegistrar
+                ? 'Тоглолт бүртгэх эрх шилжүүлэх'
+                : 'Бүртгэл хөтлөгчийн эрх шилжүүлэх боломжгүй',
+            onPressed: _canTransferRegistrar ? _transferRegistrarRole : null,
+            icon: Opacity(
+              opacity: _canTransferRegistrar ? 1 : 0.45,
+              child: Image.asset(
+                'assets/buttons/keyboard.png',
+                width: 22,
+                height: 22,
+                fit: BoxFit.contain,
+              ),
+            ),
           ),
         ],
       ),
@@ -355,6 +711,7 @@ class _HodrokhPageState extends State<HodrokhPage> {
     final borderColor = isWinner
         ? Colors.amber
         : _slotBorderPalette[index % _slotBorderPalette.length];
+    final multiWins = widget.multiWinsByUserId?[player.userId ?? ''] ?? 0;
 
     return Material(
       color: Colors.transparent,
@@ -374,14 +731,39 @@ class _HodrokhPageState extends State<HodrokhPage> {
               Row(
                 crossAxisAlignment: CrossAxisAlignment.start,
                 children: [
-                  CircleAvatar(
-                    radius: 56,
-                    backgroundColor: Colors.white24,
-                    backgroundImage: _resolveImage(player.photoUrl),
-                    child: player.photoUrl == null || player.photoUrl!.isEmpty
-                        ? const Icon(Icons.person,
-                            color: Colors.white, size: 56)
-                        : null,
+                  Stack(
+                    clipBehavior: Clip.none,
+                    children: [
+                      CircleAvatar(
+                        radius: 56,
+                        backgroundColor: Colors.white24,
+                        backgroundImage: _resolveImage(player.photoUrl),
+                        child:
+                            player.photoUrl == null || player.photoUrl!.isEmpty
+                                ? const Icon(Icons.person,
+                                    color: Colors.white, size: 56)
+                                : null,
+                      ),
+                      if (widget.multiWinsByUserId != null)
+                        Positioned(
+                          right: -14,
+                          top: 8,
+                          child: Column(
+                            children: [
+                              const Icon(Icons.emoji_events,
+                                  color: Colors.amber, size: 20),
+                              Text(
+                                '$multiWins',
+                                style: const TextStyle(
+                                  color: Colors.white,
+                                  fontSize: 16,
+                                  fontWeight: FontWeight.w700,
+                                ),
+                              ),
+                            ],
+                          ),
+                        ),
+                    ],
                   ),
                   const SizedBox(width: 10),
                   Expanded(
