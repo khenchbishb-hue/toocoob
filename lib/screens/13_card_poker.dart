@@ -5432,7 +5432,6 @@ class _PlayingTableScreenState extends State<ThirteenCardPokerScreen>
     switch (widget.gameType) {
       case '13 МОДНЫ ПОКЕР':
         const int totalSlots = 8;
-        const int columns = 4;
         return Column(
           crossAxisAlignment: CrossAxisAlignment.stretch,
           children: [
@@ -5440,10 +5439,15 @@ class _PlayingTableScreenState extends State<ThirteenCardPokerScreen>
             Expanded(
               child: LayoutBuilder(
                 builder: (context, constraints) {
-                  final tileAspectRatio = (constraints.maxWidth / columns) /
-                      (constraints.maxHeight / 2);
+                  final narrow = constraints.maxWidth < 600;
+                  final columns = narrow ? 2 : 4;
+                  final scrollable = narrow || constraints.maxHeight < 560;
+                  final tileAspectRatio = scrollable
+                      ? ((constraints.maxWidth - 8 * (columns - 1)) / columns) / 280
+                      : (constraints.maxWidth / columns) /
+                          (constraints.maxHeight / 2);
                   return GridView.builder(
-                    physics: const NeverScrollableScrollPhysics(),
+                    physics: scrollable ? null : const NeverScrollableScrollPhysics(),
                     padding: EdgeInsets.zero,
                     itemCount: totalSlots,
                     gridDelegate: SliverGridDelegateWithFixedCrossAxisCount(
@@ -6204,6 +6208,7 @@ class _PlayingTableScreenState extends State<ThirteenCardPokerScreen>
               child: VoicePlayerCue(
                 active: _pokerMic && !_pokerManual && isEnabled && _activeEighthScoringUserIds[index] == _pokerTarget,
                 child: TextField(
+                key: ValueKey('poker-score-input-$index'),
                 controller: _eighthBlockScoreControllers[index],
                 focusNode: _eighthBlockFocusNodes[index],
                 onTap: () { _pokerStable?.cancel(); setState(() => _pokerManual = true); },
@@ -6600,8 +6605,10 @@ class _PlayingTableScreenState extends State<ThirteenCardPokerScreen>
                       ),
                     ),
                     const SizedBox(height: 16),
-                    Row(
-                      mainAxisAlignment: MainAxisAlignment.end,
+                    Wrap(
+                      alignment: WrapAlignment.end,
+                      spacing: 12,
+                      runSpacing: 8,
                       children: [
                         TextButton(
                           onPressed: () {
@@ -6618,7 +6625,6 @@ class _PlayingTableScreenState extends State<ThirteenCardPokerScreen>
                           },
                           child: const Text('Болих'),
                         ),
-                        const SizedBox(width: 12),
                         ElevatedButton(
                           onPressed: selectedOrder
                                       .where((e) => e != null)

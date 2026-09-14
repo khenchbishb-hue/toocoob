@@ -67,18 +67,35 @@ class UnifiedGameAppBar extends StatelessWidget implements PreferredSizeWidget {
 
   @override
   Widget build(BuildContext context) {
-    return AppBar(
-      elevation: 0,
-      backgroundColor: backgroundColor,
-      foregroundColor: foregroundColor,
-      leading: _assetAction(
-        context: context,
-        assetPath: 'assets/buttons/back.png',
-        tooltip: 'Буцах',
-        onPressed: () => _handleBackPressed(context),
-      ),
-      title: _buildTitleWithTableControls(),
-      actions: [
+    return LayoutBuilder(builder: (context, constraints) {
+      final compact = constraints.maxWidth < 700;
+      return AppBar(
+        elevation: 0,
+        backgroundColor: backgroundColor,
+        foregroundColor: foregroundColor,
+        leading: _assetAction(
+          context: context,
+          assetPath: 'assets/buttons/back.png',
+          tooltip: 'Буцах',
+          onPressed: () => _handleBackPressed(context),
+        ),
+        title: _buildTitleWithTableControls(),
+        actions: compact
+            ? [
+                SizedBox(
+                  width: constraints.maxWidth * .6,
+                  child: SingleChildScrollView(
+                    scrollDirection: Axis.horizontal,
+                    child: Row(mainAxisSize: MainAxisSize.min, children: _actions(context)),
+                  ),
+                ),
+              ]
+            : _actions(context),
+      );
+    });
+  }
+
+  List<Widget> _actions(BuildContext context) => [
         _assetAction(
           context: context,
           assetPath: 'assets/buttons/remove user.png',
@@ -129,9 +146,7 @@ class UnifiedGameAppBar extends StatelessWidget implements PreferredSizeWidget {
           onPressed: () => _handleExitPressed(context),
         ),
         ...extraActions,
-      ],
-    );
-  }
+      ];
 
   Widget _buildTitleWithTableControls() {
     if (!showGlobalTableBar) return title;

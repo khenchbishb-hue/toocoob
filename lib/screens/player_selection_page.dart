@@ -301,8 +301,8 @@ class _PlayerSelectionPageState extends State<PlayerSelectionPage> {
                               controller: _usersGridScrollController,
                               padding: const EdgeInsets.all(16),
                               gridDelegate:
-                                  const SliverGridDelegateWithFixedCrossAxisCount(
-                                crossAxisCount: 7,
+                                  SliverGridDelegateWithFixedCrossAxisCount(
+                                crossAxisCount: (MediaQuery.sizeOf(context).width / 180).floor().clamp(2, 7),
                                 crossAxisSpacing: 16,
                                 mainAxisSpacing: 16,
                                 childAspectRatio: 0.65,
@@ -461,8 +461,8 @@ class _PlayerSelectionPageState extends State<PlayerSelectionPage> {
         .toList(growable: false);
     return GridView.builder(
       padding: const EdgeInsets.all(16),
-      gridDelegate: const SliverGridDelegateWithFixedCrossAxisCount(
-        crossAxisCount: 5,
+      gridDelegate: SliverGridDelegateWithFixedCrossAxisCount(
+        crossAxisCount: (MediaQuery.sizeOf(context).width / 180).floor().clamp(2, 5),
         crossAxisSpacing: 16,
         mainAxisSpacing: 16,
         childAspectRatio: 0.8,

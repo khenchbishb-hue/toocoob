@@ -463,17 +463,18 @@ class _DashboardAreaState extends State<_DashboardArea> {
     return LayoutBuilder(
       builder: (context, box) {
         const gap = 14.0;
-        final blockWidth = (box.maxWidth - gap) / 2;
-        final blockHeight = (box.maxHeight - gap) / 2;
+        final narrow = box.maxWidth < 650;
+        final blockWidth = narrow ? box.maxWidth : (box.maxWidth - gap) / 2;
+        final blockHeight = narrow ? 210.0 : (box.maxHeight - gap) / 2;
         return Stack(
           fit: StackFit.expand,
           children: [
             GridView.count(
-              crossAxisCount: 2,
+              crossAxisCount: narrow ? 1 : 2,
               crossAxisSpacing: gap,
               mainAxisSpacing: gap,
               childAspectRatio: blockWidth / blockHeight,
-              physics: const NeverScrollableScrollPhysics(),
+              physics: narrow ? null : const NeverScrollableScrollPhysics(),
               children: [
                 _NowOverviewBlock(
                   isLive: false,
@@ -620,8 +621,8 @@ class _NowOverviewBlockState extends State<_NowOverviewBlock>
                 _LivePlayerAvatars(initials: widget.playerInitials),
                 const SizedBox(height: 10),
               ],
-              const Row(
-                mainAxisSize: MainAxisSize.min,
+              const Wrap(
+                crossAxisAlignment: WrapCrossAlignment.center,
                 children: [
                   Text('Яг одоо',
                       style: TextStyle(
@@ -710,8 +711,8 @@ class _RankingOverviewBlock extends StatelessWidget {
                     child: _RankingShiftTable(),
                   ),
                 ),
-                const Row(
-                  mainAxisSize: MainAxisSize.min,
+                const Wrap(
+                  crossAxisAlignment: WrapCrossAlignment.center,
                   children: [
                     Text('Чансаа',
                         style: TextStyle(
@@ -856,8 +857,8 @@ class _OtherOverviewBlock extends StatelessWidget {
                     ),
                   ),
                 ),
-                const Row(
-                  mainAxisSize: MainAxisSize.min,
+                const Wrap(
+                  crossAxisAlignment: WrapCrossAlignment.center,
                   children: [
                     Text('Бусад',
                         style: TextStyle(
@@ -915,8 +916,8 @@ class _ReportOverviewBlock extends StatelessWidget {
                         painter: _TrendChartPainter(),
                         child: const SizedBox.expand())),
                 const SizedBox(height: 10),
-                const Row(
-                  mainAxisSize: MainAxisSize.min,
+                const Wrap(
+                  crossAxisAlignment: WrapCrossAlignment.center,
                   children: [
                     Text('Тайлан',
                         style: TextStyle(

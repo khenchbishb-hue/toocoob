@@ -1,13 +1,10 @@
 import 'package:firebase_auth/firebase_auth.dart';
 import '../utils/player_profiles.dart';
 import 'package:flutter/material.dart';
-import 'dart:io' show Platform;
-import 'package:flutter/foundation.dart' show kIsWeb;
 import 'package:flutter/services.dart';
 
 import 'package:uuid/uuid.dart';
 import '13_card_poker.dart';
-import 'ios/13_card_poker_ios.dart';
 import '5_card_texas.dart';
 import 'muushig.dart';
 import 'buur.dart';
@@ -1444,24 +1441,22 @@ class _KindsOfGamePageState extends State<KindsOfGamePage> {
           );
           return;
         }
-        page = !kIsWeb && Platform.isIOS
-            ? CardPokerPageIOS(selectedUserIds: activeUserIds)
-            : ThirteenCardPokerScreen(
-                gameType: '13 МОДНЫ ПОКЕР',
-                selectedUserIds: activeUserIds,
-                currentRegistrarUserId: _effectiveUserId,
-                canManageGames: widget.canManageGames,
-                autoReturnOnWinner: widget.playingFormat != 'single',
-                multiWinsByUserId: widget.playingFormat == 'multi'
-                    ? Map<String, int>.from(_multiWins)
-                    : null,
-                multiCurrentTypeNumber: widget.playingFormat == 'multi'
-                    ? _multiCurrentTypeNumber
-                    : null,
-                multiTotalTypeCount: widget.playingFormat == 'multi'
-                    ? _multiTotalTypeCount
-                    : null,
-              );
+        page = ThirteenCardPokerScreen(
+          gameType: '13 МОДНЫ ПОКЕР',
+          selectedUserIds: activeUserIds,
+          currentRegistrarUserId: _effectiveUserId,
+          canManageGames: widget.canManageGames,
+          autoReturnOnWinner: widget.playingFormat != 'single',
+          multiWinsByUserId: widget.playingFormat == 'multi'
+              ? Map<String, int>.from(_multiWins)
+              : null,
+          multiCurrentTypeNumber: widget.playingFormat == 'multi'
+              ? _multiCurrentTypeNumber
+              : null,
+          multiTotalTypeCount: widget.playingFormat == 'multi'
+              ? _multiTotalTypeCount
+              : null,
+        );
         break;
       case 1:
         page = CardTexasPage(
