@@ -13,8 +13,13 @@ dependencies:
     sdk: flutter
   cupertino_icons: ^1.0.2
   image_picker: ^1.0.0
+  qr_flutter: ^4.1.0
   cloud_firestore: any
   firebase_core: any
+  firebase_auth: any
+  firebase_auth_web: any
+  cloud_functions: any
+  cloud_functions_web: any
   firebase_storage: any
   shared_preferences: ^2.2.0
   share_plus: ^11.1.0
@@ -23,6 +28,7 @@ dependencies:
   file_selector: ^1.0.3
   http: ^1.2.2
   url_launcher: ^6.3.0
+  speech_to_text: ^7.4.0
 
 
 dev_dependencies:
@@ -33,7 +39,9 @@ dev_dependencies:
 flutter:
   uses-material-design: true
   assets:
-    - assets/logo.png
+    - assets/logo.jpg
+    - assets/system_admin_shield.png
+    - assets/players/chono.jpg
     - assets/buttons/
     - assets/13.jpg
     - assets/5.jpg
@@ -51,4 +59,3 @@ flutter:
     - assets/one time.jpg
     - assets/fonts/NotoSans-Regular.ttf
     - assets/fonts/NotoSans-Bold.ttf
-    

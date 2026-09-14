@@ -1,3 +1,6 @@
+import 'table_session.dart';
+import 'browser_table_identity.dart';
+import 'saved_game_sessions_repository.dart';
 import 'package:cloud_firestore/cloud_firestore.dart';
 
 class ActiveTableSummary {
@@ -41,6 +44,25 @@ class ActiveTableDetails {
 }
 
 class ActiveTablesRepository {
+  Future<void> closePreviousBrowserTables(String ownerId) async {
+    final snapshot = await _tables.where('ownerUserId', isEqualTo: ownerId).get();
+    for (final doc in snapshot.docs) {
+      if (!TableSession.current.isPreviousRun(doc.data(), browserTableIdentity, ownerId)) continue;
+      final archived = await _firestore.runTransaction<bool>((tx) async {
+        final data = (await tx.get(doc.reference)).data();
+        if (data == null || !TableSession.current.isPreviousRun(data, browserTableIdentity, ownerId)) return false;
+        tx.update(doc.reference, {
+          'status': 'archived', 'updatedAt': FieldValue.serverTimestamp(),
+        });
+        return true;
+      });
+      if (archived) {
+        // Only temporary recovery data is removed. Explicit saved games remain.
+        await SavedGameSessionsRepository(storageKey: 'toocoob.live_game_checkpoints.v1')
+            .removeById('live_${doc.id}');
+      }
+    }
+  }
   ActiveTablesRepository({FirebaseFirestore? firestore})
       : _firestore = firestore ?? FirebaseFirestore.instance;
 
@@ -49,11 +71,55 @@ class ActiveTablesRepository {
   CollectionReference<Map<String, dynamic>> get _tables =>
       _firestore.collection('active_tables');
 
-  Stream<Set<String>> watchActivePlayerUserIds() {
+  CollectionReference<Map<String, dynamic>> _syncedPokerTables(
+    String lockId,
+  ) =>
+      _tables.doc(lockId).collection('poker_table_states');
+
+  Stream<QuerySnapshot<Map<String, dynamic>>> watchPokerTableStates(
+    String lockId,
+  ) =>
+      _syncedPokerTables(lockId).snapshots();
+
+  Future<void> writePokerTableState({
+    required String lockId,
+    required int tableNumber,
+    required String writerUserId,
+    required Map<String, dynamic> state,
+  }) async {
+    final ref = _syncedPokerTables(lockId).doc(tableNumber.toString());
+    await _firestore.runTransaction((transaction) async {
+      final current = await transaction.get(ref);
+      final revision =
+          ((current.data()?['revision'] as num?)?.toInt() ?? 0) + 1;
+      transaction.set(
+          ref,
+          <String, dynamic>{
+            'tableNumber': tableNumber,
+            'writerUserId': writerUserId,
+            'revision': revision,
+            'state': state,
+            'updatedAt': FieldValue.serverTimestamp(),
+          },
+          SetOptions(merge: true));
+    });
+  }
+
+  Stream<Set<String>> watchActivePlayerUserIds({
+    String? currentOwnerUserId,
+    bool Function(String tableId)? isOpenInThisSession,
+  }) {
     return _tables.where('status', isEqualTo: 'active').snapshots().map((snap) {
       final ids = <String>{};
       for (final doc in snap.docs) {
         final data = doc.data();
+        // A previous browser session must not prevent its owner from choosing
+        // players and explicitly resuming a saved game. No server data changes.
+        if (currentOwnerUserId != null &&
+            data['ownerUserId'] == currentOwnerUserId &&
+            isOpenInThisSession != null && !isOpenInThisSession(doc.id)) {
+          continue;
+        }
         final players = (data['playerUserIds'] as List<dynamic>? ?? const [])
             .whereType<String>();
         ids.addAll(players);
@@ -66,7 +132,8 @@ class ActiveTablesRepository {
     return _tables.where('status', isEqualTo: 'active').snapshots().map((snap) {
       final tables = <ActiveTableSummary>[];
       for (final doc in snap.docs) {
-        final data = doc.data();
+        if (!TableSession.current.contains(doc.id)) continue;
+      final data = doc.data();
         tables.add(
           ActiveTableSummary(
             id: doc.id,
@@ -84,16 +151,7 @@ class ActiveTablesRepository {
     });
   }
 
-  Future<int> fetchNextTableNumber() async {
-    final snap = await _tables.get();
-    int maxNo = 0;
-    for (final doc in snap.docs) {
-      final data = doc.data();
-      final no = (data['tableNumber'] as num?)?.toInt() ?? 0;
-      if (no > maxNo) maxNo = no;
-    }
-    return maxNo + 1;
-  }
+  Future<int> fetchNextTableNumber() async => TableSession.current.reserveNumber();
 
   Future<List<ActiveTableSummary>> fetchActiveTableSummaries({
     String? ownerUserId,
@@ -108,6 +166,7 @@ class ActiveTablesRepository {
     final snap = await query.get();
     final tables = <ActiveTableSummary>[];
     for (final doc in snap.docs) {
+      if (!TableSession.current.contains(doc.id)) continue;
       final data = doc.data();
       tables.add(
         ActiveTableSummary(
@@ -160,20 +219,39 @@ class ActiveTablesRepository {
     required String playingFormat,
     String? ownerUserId,
     int? tableNumber,
+    String? replacingTableId,
   }) async {
     final ref = _tables.doc();
-    await ref.set({
+    final data = <String, dynamic>{
       'status': 'active',
       'gameKey': gameKey,
       'gameName': gameName,
       'playingFormat': playingFormat,
-      'tableNumber': tableNumber ?? 1,
+      'tableNumber': tableNumber ?? TableSession.current.reserveNumber(),
       'playerUserIds': playerUserIds,
       'ownerUserId': ownerUserId,
       'savedSessionId': null,
+      'browserTabId': browserTableIdentity,
+      'browserRunId': TableSession.current.runId,
       'createdAt': FieldValue.serverTimestamp(),
       'updatedAt': FieldValue.serverTimestamp(),
+    };
+    await _firestore.runTransaction((transaction) async {
+      if (replacingTableId != null) {
+        final previousRef = _tables.doc(replacingTableId);
+        final previous = (await transaction.get(previousRef)).data();
+        if (previous == null || previous['status'] != 'active' ||
+            ownerUserId == null || previous['ownerUserId'] != ownerUserId) {
+          throw StateError('Ширээний төлөв өөрчлөгдсөн байна.');
+        }
+        transaction.update(previousRef, {
+          'status': 'archived',
+          'updatedAt': FieldValue.serverTimestamp(),
+        });
+      }
+      transaction.set(ref, data);
     });
+    TableSession.current.register(ref.id);
     return ref.id;
   }
 
@@ -182,6 +260,22 @@ class ActiveTablesRepository {
       lockId,
       savedSessionId: sessionId,
     );
+  }
+
+  Future<void> updatePokerTableRegistrars(
+    String lockId, {
+    required bool useSeparateRegistrars,
+    required Map<int, String?> registrarUserIds,
+  }) async {
+    final id = lockId.trim();
+    if (id.isEmpty) return;
+    await _tables.doc(id).update({
+      'useSeparateTableRegistrars': useSeparateRegistrars,
+      'tableRegistrarUserIds': registrarUserIds.map(
+        (table, userId) => MapEntry(table.toString(), userId),
+      ),
+      'updatedAt': FieldValue.serverTimestamp(),
+    });
   }
 
   Future<void> updateActiveTableState(
@@ -206,6 +300,17 @@ class ActiveTablesRepository {
     }
 
     await _tables.doc(id).update(updates);
+  }
+
+  Future<void> archiveOwnedTable(String lockId, String ownerUserId) async {
+    await _firestore.runTransaction((transaction) async {
+      final ref = _tables.doc(lockId);
+      final data = (await transaction.get(ref)).data();
+      if (data == null || data['ownerUserId'] != ownerUserId) {
+        throw StateError('Зөвхөн ширээний эзэмшигч хаана.');
+      }
+      transaction.update(ref, {'status': 'archived', 'updatedAt': FieldValue.serverTimestamp()});
+    });
   }
 
   Future<void> releaseActiveTableLock(String lockId) async {

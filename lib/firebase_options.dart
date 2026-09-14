@@ -24,15 +24,6 @@ class DefaultFirebaseOptions {
         return android;
       case TargetPlatform.iOS:
         return ios;
-      case TargetPlatform.macOS:
-        return macos;
-      case TargetPlatform.windows:
-        return windows;
-      case TargetPlatform.linux:
-        throw UnsupportedError(
-          'DefaultFirebaseOptions have not been configured for linux - '
-          'you can reconfigure this by running the FlutterFire CLI again.',
-        );
       default:
         throw UnsupportedError(
           'DefaultFirebaseOptions are not supported for this platform.',
@@ -67,22 +58,4 @@ class DefaultFirebaseOptions {
     iosBundleId: 'com.example.toocoob',
   );
 
-  static const FirebaseOptions macos = FirebaseOptions(
-    apiKey: 'AIzaSyBvPGmF-QOdyyRG91YsgkeSait1iDaYHac',
-    appId: '1:340706046311:ios:331611c9b17339e3c73fc2',
-    messagingSenderId: '340706046311',
-    projectId: 'toocoob',
-    storageBucket: 'toocoob.firebasestorage.app',
-    iosBundleId: 'com.example.toocoob',
-  );
-
-  static const FirebaseOptions windows = FirebaseOptions(
-    apiKey: 'AIzaSyBjzkOghu8feqNkYLUOqvFN-_EjCEpRsdU',
-    appId: '1:340706046311:web:5976d8a5a0a9aeebc73fc2',
-    messagingSenderId: '340706046311',
-    projectId: 'toocoob',
-    authDomain: 'toocoob.firebaseapp.com',
-    storageBucket: 'toocoob.firebasestorage.app',
-    measurementId: 'G-DXT12H6LZB',
-  );
 }

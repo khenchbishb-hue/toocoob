@@ -1,34 +1,34 @@
-import 'dart:async';
 import 'dart:math' show min;
-import 'dart:io' show Platform;
 import 'package:flutter/material.dart';
-import 'screens/user_home.dart';
-import 'screens/player_selection_page.dart';
-import 'screens/ios/user_home_ios.dart';
-import 'screens/ios/player_selection_page_ios.dart';
+import 'package:flutter/services.dart';
+import 'screens/member_dashboard.dart';
+import 'screens/system_admin_dashboard.dart';
 import 'package:cloud_firestore/cloud_firestore.dart';
+import 'package:firebase_auth/firebase_auth.dart';
 import 'package:firebase_core/firebase_core.dart';
+import 'package:cloud_functions/cloud_functions.dart';
 import 'package:flutter/foundation.dart' show kIsWeb;
 import 'utils/firebase_initializer.dart';
+import 'utils/firebase_auth_web_registrar_stub.dart'
+    if (dart.library.html) 'utils/firebase_auth_web_registrar.dart';
 import 'firebase_options.dart';
 import 'utils/local_debug_file.dart';
 
 // Set to true when Firebase successfully initialized.
 bool firebaseInitialized = false;
+final GlobalKey<NavigatorState> rootNavigatorKey = GlobalKey<NavigatorState>();
+
+void returnToCleanLogin() {
+  FirebaseAuth.instance.signOut();
+  rootNavigatorKey.currentState?.pushAndRemoveUntil(
+    MaterialPageRoute<void>(builder: (_) => const LoginScreen()),
+    (_) => false,
+  );
+}
 
 void main() async {
   WidgetsFlutterBinding.ensureInitialized();
-
-  // Windows дээр Firebase-ийг skip хийх (C++ SDK асуудлаас болж)
-  if (!kIsWeb && Platform.isWindows) {
-    print('Windows platform: Running without Firebase');
-    await writeDebugFile(
-      r'C:\toocoob\firebase_init_error.txt',
-      'Windows platform: Firebase disabled due to C++ SDK compatibility issues',
-    );
-    runApp(const ToocoobApp());
-    return;
-  }
+  registerFirebaseAuthWebPlugin();
 
   try {
     // Initialize Firebase with platform-specific options generated
@@ -60,6 +60,7 @@ class ToocoobApp extends StatelessWidget {
   @override
   Widget build(BuildContext context) {
     return MaterialApp(
+      navigatorKey: rootNavigatorKey,
       title: 'ToocooB',
       theme: ThemeData(primarySwatch: Colors.deepPurple),
       home: const LoginScreen(),
@@ -76,232 +77,506 @@ class LoginScreen extends StatefulWidget {
 }
 
 class _LoginScreenState extends State<LoginScreen> {
-  final _usernameController = TextEditingController();
+  final _emailController = TextEditingController();
   final _passwordController = TextEditingController();
+  final _lastNameController = TextEditingController();
+  final _firstNameController = TextEditingController();
+  final _nicknameController = TextEditingController();
+  final _phoneController = TextEditingController();
+  final _registrationPasswordController = TextEditingController();
+  final _confirmPasswordController = TextEditingController();
   bool _hideFirebaseWarning = false;
-  Timer? _searchDebounce;
-  List<String> _userSuggestions = [];
+  bool _isRegistration = false;
+  bool _obscureRegistrationPassword = true;
+  bool _isSubmitting = false;
 
   @override
   void dispose() {
-    _searchDebounce?.cancel();
-    _usernameController.dispose();
+    _emailController.dispose();
     _passwordController.dispose();
+    _lastNameController.dispose();
+    _firstNameController.dispose();
+    _nicknameController.dispose();
+    _phoneController.dispose();
+    _registrationPasswordController.dispose();
+    _confirmPasswordController.dispose();
     super.dispose();
   }
 
-  void _searchUsers(String query) {
-    _searchDebounce?.cancel();
-
-    if (query.trim().isEmpty) {
-      setState(() {
-        _userSuggestions = [];
-      });
-      return;
-    }
-
-    if (Firebase.apps.isEmpty) {
-      return;
-    }
-
-    _searchDebounce = Timer(const Duration(milliseconds: 300), () async {
-      try {
-        final prefix = query.trim().toLowerCase();
-        print('[DEBUG] Searching for users with prefix: $prefix');
-        // Try simple contains search without orderBy (no index required)
-        final snapshot =
-            await FirebaseFirestore.instance.collection('users').get();
-
-        print('[DEBUG] Total users in collection: ${snapshot.docs.length}');
-
-        final results = snapshot.docs
-            .where((doc) {
-              final username =
-                  (doc.data()['username'] ?? '').toString().toLowerCase();
-              print('[DEBUG] Checking user: $username');
-              return username.startsWith(prefix);
-            })
-            .map((doc) => (doc.data()['username'] ?? '').toString())
-            .take(5)
-            .toList();
-
-        print('[DEBUG] Found ${results.length} matching users: $results');
-
-        if (mounted) {
-          setState(() {
-            _userSuggestions = results;
-          });
-        }
-      } catch (e) {
-        print('[ERROR] Search error: $e');
-        if (mounted) {
-          setState(() {
-            _userSuggestions = [];
-          });
-        }
-      }
-    });
+  void _clearSensitiveInputs() {
+    _passwordController.clear();
+    _registrationPasswordController.clear();
+    _confirmPasswordController.clear();
+    FocusScope.of(context).unfocus();
+    TextInput.finishAutofillContext(shouldSave: false);
   }
 
-  Widget _buildSuggestions() {
-    if (_userSuggestions.isEmpty) {
-      return const SizedBox.shrink();
+  bool get _canLogin =>
+      RegExp(r'^[^@\s]+@[^@\s]+\.[^@\s]+$')
+          .hasMatch(_emailController.text.trim()) &&
+      _passwordController.text.isNotEmpty;
+
+  bool get _canRegister {
+    final phoneDigits =
+        _phoneController.text.replaceAll(RegExp(r'[^0-9]'), '');
+    final password = _registrationPasswordController.text;
+    final email = _emailController.text.trim();
+    final isSecurePassword = password.length >= 8 &&
+        RegExp(r'[A-Z]').hasMatch(password) &&
+        RegExp(r'[a-z]').hasMatch(password) &&
+        RegExp(r'[0-9]').hasMatch(password) &&
+        RegExp(r'[^A-Za-z0-9]').hasMatch(password);
+
+    return _lastNameController.text.trim().isNotEmpty &&
+        _firstNameController.text.trim().isNotEmpty &&
+        _nicknameController.text.trim().isNotEmpty &&
+        phoneDigits.length >= 8 &&
+        RegExp(r'^[^@\s]+@[^@\s]+\.[^@\s]+$').hasMatch(email) &&
+        isSecurePassword &&
+        password == _confirmPasswordController.text;
+  }
+
+  Future<void> _submitRegistration() async {
+    if (!_canRegister) return;
+    if (Firebase.apps.isEmpty) {
+      _showMessage('Firebase эхлүүлэгдээгүй байна.');
+      return;
     }
-    return SingleChildScrollView(
-      child: Column(
-        children: _userSuggestions.map((suggestion) {
-          return Material(
-            child: InkWell(
-              onTap: () {
-                _usernameController.text = suggestion;
-                setState(() {
-                  _userSuggestions = [];
-                });
-              },
-              child: Padding(
-                padding:
-                    const EdgeInsets.symmetric(horizontal: 16, vertical: 12),
-                child: Align(
-                  alignment: Alignment.centerLeft,
-                  child: Text(suggestion),
-                ),
-              ),
-            ),
-          );
-        }).toList(),
+
+    setState(() => _isSubmitting = true);
+    final email = _emailController.text.trim().toLowerCase();
+    try {
+      final credential = await FirebaseAuth.instance
+          .createUserWithEmailAndPassword(
+        email: email,
+        password: _registrationPasswordController.text,
+      );
+      final user = credential.user;
+      if (user == null) throw StateError('Account үүсгэж чадсангүй.');
+
+      await user.updateDisplayName(_nicknameController.text.trim());
+      await FirebaseFirestore.instance.collection('users').doc(user.uid).set({
+        'uid': user.uid,
+        'lastName': _lastNameController.text.trim(),
+        'firstName': _firstNameController.text.trim(),
+        'nickname': _nicknameController.text.trim(),
+        'phone': _phoneController.text.trim(),
+        'email': email,
+        'role': 'user',
+        'createdAt': FieldValue.serverTimestamp(),
+        'updatedAt': FieldValue.serverTimestamp(),
+      });
+      try {
+        await user.sendEmailVerification();
+      } on FirebaseAuthException catch (error) {
+        await FirebaseAuth.instance.signOut();
+        _clearSensitiveInputs();
+        if (!mounted) return;
+        setState(() => _isRegistration = false);
+        _showMessage(
+          'Account үүслээ, гэхдээ баталгаажуулах и-мэйл илгээхэд алдаа гарлаа (${error.code}). Firebase Console-ийн Authentication → Users хэсгээс $email account үүссэн эсэхийг шалгана уу.',
+        );
+        return;
+      }
+      await FirebaseAuth.instance.signOut();
+      _clearSensitiveInputs();
+      if (!mounted) return;
+      setState(() => _isRegistration = false);
+      _showMessage('Баталгаажуулах холбоосыг $email хаяг руу илгээлээ. И-мэйлээ баталгаажуулаад нэвтэрнэ үү.');
+    } on FirebaseAuthException catch (error) {
+      _showMessage(_authErrorText(error));
+    } catch (_) {
+      _showMessage('Бүртгэл хадгалах үед алдаа гарлаа. Дахин оролдоно уу.');
+    } finally {
+      if (mounted) setState(() => _isSubmitting = false);
+    }
+  }
+
+  void _showMessage(String text) {
+    if (mounted) ScaffoldMessenger.of(context).showSnackBar(SnackBar(content: Text(text)));
+  }
+
+  String _authErrorText(FirebaseAuthException error) {
+    debugPrint('Firebase Auth error [${error.code}]: ${error.message}');
+    switch (error.code) {
+      case 'email-already-in-use':
+        return 'Энэ и-мэйл хаягаар account аль хэдийн бүртгэгдсэн байна.';
+      case 'weak-password':
+        return 'Нууц үг шаардлагыг хангахгүй байна.';
+      case 'invalid-email':
+        return 'И-мэйл хаяг буруу байна.';
+      case 'user-not-found':
+      case 'wrong-password':
+      case 'invalid-credential':
+        return 'И-мэйл эсвэл нууц үг буруу байна.';
+      case 'too-many-requests':
+        return 'Олон удаа оролдсон байна. Түр хүлээгээд дахин оролдоно уу.';
+      case 'operation-not-allowed':
+        return 'Firebase дээр Email/Password нэвтрэх арга идэвхжээгүй байна.';
+      case 'network-request-failed':
+        return 'Сүлжээний алдаа гарлаа. Интернет холболтоо шалгаад дахин оролдоно уу.';
+      case 'app-not-authorized':
+        return 'Энэ веб домэйн Firebase Authentication-д зөвшөөрөгдөөгүй байна.';
+      case 'captcha-check-failed':
+        return 'Аюулгүй байдлын шалгалт амжилтгүй боллоо. Хуудсыг дахин ачааллаад оролдоно уу.';
+      case 'channel-error':
+        return 'Firebase веб сувгийн холболт амжилтгүй боллоо. Хуудсыг Ctrl+Shift+R-ээр бүрэн ачааллаад дахин оролдоно уу.';
+      default:
+        return 'Firebase бүртгэлийн алдаа гарлаа (${error.code}).';
+    }
+  }
+
+  InputDecoration _authDecoration(String label) => InputDecoration(
+        labelText: label,
+        border: const OutlineInputBorder(),
+      );
+
+  Widget _authModeButton({required String label, required bool selected}) {
+    return Expanded(
+      child: OutlinedButton(
+        onPressed: () {
+          setState(() {
+            _isRegistration = label == 'Бүртгүүлэх';
+          });
+        },
+        style: OutlinedButton.styleFrom(
+          foregroundColor: selected ? Colors.white : Colors.deepPurple,
+          backgroundColor: selected ? Colors.deepPurple : Colors.white,
+          side: const BorderSide(color: Colors.deepPurple, width: 1.5),
+          padding: const EdgeInsets.symmetric(vertical: 15),
+        ),
+        child: Text(label),
       ),
     );
   }
 
+  Widget _authPanel() {
+    return Column(
+      crossAxisAlignment: CrossAxisAlignment.stretch,
+      children: [
+        Row(
+          children: [
+            _authModeButton(label: 'Нэвтрэх', selected: !_isRegistration),
+            const SizedBox(width: 12),
+            _authModeButton(label: 'Бүртгүүлэх', selected: _isRegistration),
+          ],
+        ),
+        const SizedBox(height: 24),
+        if (!_isRegistration) ...[
+          TextField(
+            controller: _emailController,
+            keyboardType: TextInputType.emailAddress,
+            autofillHints: const [AutofillHints.email],
+            onChanged: (_) => setState(() {}),
+            decoration: _authDecoration('И-мэйл хаяг'),
+          ),
+          const SizedBox(height: 16),
+          TextField(
+            controller: _passwordController,
+            autofillHints: const [AutofillHints.password],
+            enableSuggestions: false,
+            obscureText: true,
+            textInputAction: TextInputAction.done,
+            onChanged: (_) => setState(() {}),
+            onSubmitted: (_) => _canLogin ? _login() : null,
+            decoration: _authDecoration('Нууц үг'),
+          ),
+          const SizedBox(height: 24),
+          ElevatedButton(
+            onPressed: _canLogin && !_isSubmitting ? _login : null,
+            child: Padding(
+              padding: const EdgeInsets.symmetric(vertical: 12),
+              child: _isSubmitting
+                  ? const SizedBox(
+                      width: 20,
+                      height: 20,
+                      child: CircularProgressIndicator(strokeWidth: 2),
+                    )
+                  : const Text('Нэвтрэх'),
+            ),
+          ),
+          TextButton(
+            onPressed: _isSubmitting ? null : _sendPasswordReset,
+            child: const Text('Нууц үгээ мартсан уу?'),
+          ),
+          TextButton(
+            onPressed: _isSubmitting ? null : _resendEmailVerification,
+            child: const Text('Баталгаажуулах и-мэйл дахин илгээх'),
+          ),
+        ] else ...[
+          TextField(
+            controller: _lastNameController,
+            textCapitalization: TextCapitalization.words,
+            onChanged: (_) => setState(() {}),
+            decoration: _authDecoration('Овог'),
+          ),
+          const SizedBox(height: 14),
+          TextField(
+            controller: _firstNameController,
+            textCapitalization: TextCapitalization.words,
+            onChanged: (_) => setState(() {}),
+            decoration: _authDecoration('Нэр'),
+          ),
+          const SizedBox(height: 14),
+          Row(
+            children: [
+              Expanded(
+                child: TextField(
+                  controller: _nicknameController,
+                  onChanged: (_) => setState(() {}),
+                  decoration: _authDecoration('Хоч'),
+                ),
+              ),
+              const SizedBox(width: 14),
+              Expanded(
+                child: TextField(
+                  controller: _phoneController,
+                  keyboardType: TextInputType.phone,
+                  onChanged: (_) => setState(() {}),
+                  decoration: _authDecoration('Утасны дугаар'),
+                ),
+              ),
+            ],
+          ),
+          const SizedBox(height: 14),
+          TextField(
+            controller: _emailController,
+            keyboardType: TextInputType.emailAddress,
+            onChanged: (_) => setState(() {}),
+            decoration: _authDecoration('И-мэйл хаяг'),
+          ),
+          const SizedBox(height: 14),
+          TextField(
+            controller: _registrationPasswordController,
+            obscureText: _obscureRegistrationPassword,
+            enableSuggestions: false,
+            onChanged: (_) => setState(() {}),
+            decoration: _authDecoration('Нууц үг').copyWith(
+              helperText:
+                  '8+ тэмдэгт, том/жижиг үсэг, тоо, тусгай тэмдэгт оруулна.',
+              suffixIcon: IconButton(
+                onPressed: () => setState(
+                  () => _obscureRegistrationPassword = !_obscureRegistrationPassword,
+                ),
+                icon: Icon(
+                  _obscureRegistrationPassword
+                      ? Icons.visibility_outlined
+                      : Icons.visibility_off_outlined,
+                ),
+              ),
+            ),
+          ),
+          const SizedBox(height: 14),
+          TextField(
+            controller: _confirmPasswordController,
+            obscureText: _obscureRegistrationPassword,
+            enableSuggestions: false,
+            onChanged: (_) => setState(() {}),
+            decoration: _authDecoration('Нууц үг давтах'),
+          ),
+          const SizedBox(height: 24),
+          ElevatedButton(
+            onPressed: _canRegister && !_isSubmitting ? _submitRegistration : null,
+            child: Padding(
+              padding: const EdgeInsets.symmetric(vertical: 12),
+              child: _isSubmitting
+                  ? const SizedBox(
+                      width: 20,
+                      height: 20,
+                      child: CircularProgressIndicator(strokeWidth: 2),
+                    )
+                  : const Text('Бүртгүүлэх'),
+            ),
+          ),
+        ],
+      ],
+    );
+  }
+
+  Widget _authCard() {
+    return Container(
+      padding: const EdgeInsets.all(28),
+      decoration: BoxDecoration(
+        color: Colors.white.withOpacity(0.94),
+        borderRadius: BorderRadius.circular(20),
+        border: Border.all(
+          color: const Color(0xFF1B5E7A).withOpacity(0.22),
+        ),
+        boxShadow: const [
+          BoxShadow(
+            color: Color(0x260B2D3A),
+            blurRadius: 24,
+            offset: Offset(0, 10),
+          ),
+        ],
+      ),
+      child: _authPanel(),
+    );
+  }
+
   Future<void> _login() async {
-    final username = _usernameController.text.trim();
-    final password = _passwordController.text.trim();
+    if (!_canLogin || Firebase.apps.isEmpty) {
+      _showMessage('И-мэйл, нууц үгээ зөв оруулна уу.');
+      return;
+    }
 
-    print('[LOGIN] Attempting login with username: $username');
+    setState(() => _isSubmitting = true);
+    try {
+      final credential = await FirebaseAuth.instance.signInWithEmailAndPassword(
+        email: _emailController.text.trim().toLowerCase(),
+        password: _passwordController.text,
+      );
+      final user = credential.user;
+      await user?.reload();
+      final refreshedUser = FirebaseAuth.instance.currentUser;
+      if (refreshedUser == null) throw StateError('Нэвтрэх амжилтгүй боллоо.');
+      if (!refreshedUser.emailVerified) {
+        await FirebaseAuth.instance.signOut();
+        _showMessage('И-мэйлээ баталгаажуулаагүй байна. И-мэйл дэх холбоосоор баталгаажуулаад дахин нэвтэрнэ үү.');
+        return;
+      }
 
-    if (username == 'admin' && password == 'admin123') {
-      print('[LOGIN] Admin credentials matched');
-      Navigator.push(
+      final isSystemAdmin = await _ensureSystemAdminClaim(refreshedUser);
+
+      final profile = await FirebaseFirestore.instance
+          .collection('users')
+          .doc(refreshedUser.uid)
+          .get();
+      final nickname = (profile.data()?['nickname'] ??
+              refreshedUser.displayName ??
+              refreshedUser.email ??
+              'Хэрэглэгч')
+          .toString();
+      final firstName = (profile.data()?['firstName'] ?? '').toString().trim();
+      final lastName = (profile.data()?['lastName'] ?? '').toString().trim();
+      final profileName = firstName.isEmpty
+          ? nickname
+          : lastName.isEmpty
+              ? firstName
+              : '${lastName.substring(0, 1)}. $firstName';
+      final canManageGames = profile.data()?['canManageGames'] == true;
+      final hasPaymentAccount = (profile.data()?['accountNumber'] ?? '')
+          .toString()
+          .trim()
+          .isNotEmpty;
+      _clearSensitiveInputs();
+      if (!mounted) return;
+      Navigator.pushReplacement(
         context,
         MaterialPageRoute(
-          builder: (context) => !kIsWeb && Platform.isIOS
-              ? const PlayerSelectionPageIOS(
-                  isAdmin: true,
-                  resetOwnedActiveTablesOnOpen: true,
-                )
-              : const PlayerSelectionPage(
-                  isAdmin: true,
-                  resetOwnedActiveTablesOnOpen: true,
-                ),
+          builder: (_) => MemberDashboard(
+            username: nickname,
+            profileName: profileName,
+            hasPaymentAccount: hasPaymentAccount,
+            onLogout: returnToCleanLogin,
+            canManageGames: canManageGames,
+            isSystemAdmin: isSystemAdmin,
+            onOpenSystemAdmin: isSystemAdmin
+                ? (dashboardContext) => Navigator.of(dashboardContext).push(
+                      MaterialPageRoute(
+                        builder: (_) => SystemAdminDashboard(
+                          onLogout: returnToCleanLogin,
+                          onBack: () => Navigator.of(dashboardContext).pop(),
+                        ),
+                      ),
+                    )
+                : null,
+          ),
         ),
       );
-    } else {
-      if (username.isEmpty || password.isEmpty) {
-        ScaffoldMessenger.of(context).showSnackBar(
-          const SnackBar(
-              content: Text('Нэвтрэх нэр болон нууц үгээ оруулна уу')),
-        );
-        return;
+    } on FirebaseAuthException catch (error) {
+      _showMessage(_authErrorText(error));
+    } catch (_) {
+      _showMessage('Профайлын мэдээлэл ачаалах үед алдаа гарлаа.');
+    } finally {
+      if (mounted) setState(() => _isSubmitting = false);
+    }
+  }
+
+  /// The server silently returns false for ordinary users. For the one
+  /// configured, verified account it sets a signed custom claim and we force a
+  /// token refresh before deciding which controls to display.
+  Future<bool> _ensureSystemAdminClaim(User user) async {
+    final currentToken = await user.getIdTokenResult();
+    if (currentToken.claims?['systemAdmin'] == true) return true;
+    try {
+      await FirebaseFunctions.instance
+          .httpsCallable('bootstrapSystemAdmin')
+          .call();
+      final refreshedToken = await user.getIdTokenResult(true);
+      return refreshedToken.claims?['systemAdmin'] == true;
+    } on FirebaseFunctionsException catch (error) {
+      // A permission error is the normal outcome for all non-admin accounts.
+      debugPrint('System Admin claim was not assigned: ${error.code}');
+      return false;
+    } catch (error) {
+      debugPrint('System Admin claim check failed: $error');
+      return false;
+    }
+  }
+
+  Future<void> _sendPasswordReset() async {
+    final email = _emailController.text.trim().toLowerCase();
+    if (!RegExp(r'^[^@\s]+@[^@\s]+\.[^@\s]+$').hasMatch(email)) {
+      _showMessage('Нууц үг сэргээх и-мэйл хаягаа оруулна уу.');
+      return;
+    }
+    try {
+      await FirebaseAuth.instance.sendPasswordResetEmail(email: email);
+      _showMessage('Нууц үг сэргээх холбоосыг $email рүү илгээлээ.');
+    } on FirebaseAuthException catch (error) {
+      _showMessage(_authErrorText(error));
+    }
+  }
+
+  Future<void> _resendEmailVerification() async {
+    if (!_canLogin) {
+      _showMessage('И-мэйл болон нууц үгээ оруулна уу.');
+      return;
+    }
+
+    setState(() => _isSubmitting = true);
+    try {
+      final credential = await FirebaseAuth.instance.signInWithEmailAndPassword(
+        email: _emailController.text.trim().toLowerCase(),
+        password: _passwordController.text,
+      );
+      final user = credential.user;
+      await user?.reload();
+      final refreshedUser = FirebaseAuth.instance.currentUser;
+      if (refreshedUser == null) throw StateError('Account олдсонгүй.');
+      if (refreshedUser.emailVerified) {
+        _showMessage('Энэ и-мэйл хаяг аль хэдийн баталгаажсан байна.');
+      } else {
+        await refreshedUser.sendEmailVerification();
+        _showMessage('Баталгаажуулах холбоосыг дахин илгээлээ. Spam хавтсаа мөн шалгана уу.');
       }
-
-      if (Firebase.apps.isEmpty) {
-        ScaffoldMessenger.of(context).showSnackBar(
-          const SnackBar(content: Text('Firebase эхлүүлэгдээгүй байна.')),
-        );
-        return;
-      }
-
-      try {
-        print('[LOGIN] Querying Firestore for user...');
-
-        // Эхлээд username-аар хайна
-        final userQuery = await FirebaseFirestore.instance
-            .collection('users')
-            .where('username', isEqualTo: username)
-            .limit(1)
-            .get();
-
-        if (userQuery.docs.isEmpty) {
-          print('[LOGIN] Username not found');
-          ScaffoldMessenger.of(context).showSnackBar(
-            const SnackBar(content: Text('Хэрэглэгч олдсонгүй')),
-          );
-          return;
-        }
-
-        final userDoc = userQuery.docs.first;
-        final userData = userDoc.data();
-        final storedPassword = (userData['password'] ?? '').toString();
-
-        print('[LOGIN] User found, checking password...');
-        print('[LOGIN] Stored password: $storedPassword');
-        print('[LOGIN] Entered password: $password');
-
-        if (storedPassword != password) {
-          print('[LOGIN] Password mismatch');
-          ScaffoldMessenger.of(context).showSnackBar(
-            const SnackBar(content: Text('Нууц үг буруу байна')),
-          );
-          return;
-        }
-
-        final docId = userDoc.id;
-        final canManageGames = userData['canManageGames'] == true;
-        print('[LOGIN] User authenticated successfully with ID: $docId');
-        if (canManageGames) {
-          ScaffoldMessenger.of(context).showSnackBar(
-            const SnackBar(
-              content: Text('Тоглоомын бүртгэл хөтлөх эрхтэйгээр нэвтэрлээ.'),
-            ),
-          );
-          Navigator.push(
-            context,
-            MaterialPageRoute(
-              builder: (context) => !kIsWeb && Platform.isIOS
-                  ? PlayerSelectionPageIOS(
-                      isAdmin: false,
-                      currentUserId: docId,
-                      canManageGames: true,
-                      resetOwnedActiveTablesOnOpen: true,
-                    )
-                  : PlayerSelectionPage(
-                      isAdmin: false,
-                      currentUserId: docId,
-                      canManageGames: true,
-                      resetOwnedActiveTablesOnOpen: true,
-                    ),
-            ),
-          );
-          return;
-        }
-
-        Navigator.push(
-          context,
-          MaterialPageRoute(
-            builder: (context) => !kIsWeb && Platform.isIOS
-                ? UserHomeIOS(userId: docId, username: username)
-                : UserHome(userId: docId, username: username),
-          ),
-        );
-      } catch (e) {
-        print('[LOGIN] Error: $e');
-        ScaffoldMessenger.of(context).showSnackBar(
-          SnackBar(content: Text('Алдаа гарлаа: $e')),
-        );
-      }
+      await FirebaseAuth.instance.signOut();
+      _clearSensitiveInputs();
+    } on FirebaseAuthException catch (error) {
+      _showMessage(_authErrorText(error));
+    } catch (_) {
+      _showMessage('Баталгаажуулах и-мэйл дахин илгээх үед алдаа гарлаа.');
+    } finally {
+      if (mounted) setState(() => _isSubmitting = false);
     }
   }
 
   @override
   Widget build(BuildContext context) {
     return Scaffold(
-      backgroundColor: Colors.grey[100],
-      body: SingleChildScrollView(
-        padding: const EdgeInsets.all(24),
-        child: Center(
-          child: ConstrainedBox(
-            constraints: const BoxConstraints(maxWidth: 1200),
-            child: Column(
+      backgroundColor: const Color(0xFFEAF6FF),
+      body: DecoratedBox(
+        decoration: const BoxDecoration(
+          color: Color(0xFFEAF6FF),
+        ),
+        child: SafeArea(
+            child: SingleChildScrollView(
+              padding: const EdgeInsets.all(24),
+              child: Center(
+                child: ConstrainedBox(
+                  constraints: const BoxConstraints(maxWidth: 1200),
+                  child: Column(
               mainAxisSize: MainAxisSize.min,
               children: [
                 if (kIsWeb && Firebase.apps.isEmpty && !_hideFirebaseWarning)
@@ -339,8 +614,12 @@ class _LoginScreenState extends State<LoginScreen> {
                 LayoutBuilder(builder: (context, constraints) {
                   final screenWidth = MediaQuery.of(context).size.width;
                   final isSmallScreenLocal = screenWidth < 600;
-                  final imageHeight =
-                      min(430.0, MediaQuery.of(context).size.height * 0.45);
+                  final imageHeight = isSmallScreenLocal
+                      ? min(
+                          430.0,
+                          MediaQuery.of(context).size.height * 0.45,
+                        )
+                      : MediaQuery.of(context).size.height - 64;
 
                   if (isSmallScreenLocal) {
                     return Column(
@@ -348,42 +627,10 @@ class _LoginScreenState extends State<LoginScreen> {
                       children: [
                         SizedBox(
                             height: imageHeight,
-                            child: Image.asset('assets/logo.png',
+                            child: Image.asset('assets/logo.jpg',
                                 fit: BoxFit.contain)),
-                        const SizedBox(height: 16),
-                        const Text(
-                          'ToocooB',
-                          style: TextStyle(
-                            fontSize: 48,
-                            fontWeight: FontWeight.bold,
-                          ),
-                        ),
                         const SizedBox(height: 24),
-                        TextField(
-                          controller: _usernameController,
-                          onChanged: _searchUsers,
-                          decoration: const InputDecoration(
-                            labelText: 'Нэвтрэх нэр',
-                            border: OutlineInputBorder(),
-                          ),
-                        ),
-                        _buildSuggestions(),
-                        const SizedBox(height: 16),
-                        TextField(
-                          controller: _passwordController,
-                          obscureText: true,
-                          textInputAction: TextInputAction.done,
-                          onSubmitted: (_) => _login(),
-                          decoration: const InputDecoration(
-                            labelText: 'Нууц үг',
-                            border: OutlineInputBorder(),
-                          ),
-                        ),
-                        const SizedBox(height: 24),
-                        ElevatedButton(
-                          onPressed: _login,
-                          child: const Text('Нэвтрэх'),
-                        ),
+                        _authCard(),
                       ],
                     );
                   }
@@ -397,16 +644,8 @@ class _LoginScreenState extends State<LoginScreen> {
                           children: [
                             SizedBox(
                                 height: imageHeight,
-                                child: Image.asset('assets/logo.png',
+                                child: Image.asset('assets/logo.jpg',
                                     fit: BoxFit.contain)),
-                            const SizedBox(height: 24),
-                            const Text(
-                              'ToocooB',
-                              style: TextStyle(
-                                fontSize: 56,
-                                fontWeight: FontWeight.bold,
-                              ),
-                            ),
                           ],
                         ),
                       ),
@@ -415,42 +654,20 @@ class _LoginScreenState extends State<LoginScreen> {
                         child: Column(
                           mainAxisAlignment: MainAxisAlignment.center,
                           children: [
-                            TextField(
-                              controller: _usernameController,
-                              onChanged: _searchUsers,
-                              decoration: const InputDecoration(
-                                labelText: 'Нэвтрэх нэр',
-                                border: OutlineInputBorder(),
-                              ),
-                            ),
-                            _buildSuggestions(),
-                            const SizedBox(height: 16),
-                            TextField(
-                              controller: _passwordController,
-                              obscureText: true,
-                              textInputAction: TextInputAction.done,
-                              onSubmitted: (_) => _login(),
-                              decoration: const InputDecoration(
-                                labelText: 'Нууц үг',
-                                border: OutlineInputBorder(),
-                              ),
-                            ),
-                            const SizedBox(height: 24),
-                            ElevatedButton(
-                              onPressed: _login,
-                              child: const Text('Нэвтрэх'),
-                            ),
+                            _authCard(),
                           ],
                         ),
                       ),
                     ],
                   );
                 }),
-              ],
+                  ],
+                ),
+              ),
             ),
           ),
+          ),
         ),
-      ),
     );
   }
 }

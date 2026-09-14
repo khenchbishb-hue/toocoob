@@ -2,6 +2,10 @@
 <!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
 <plist version="1.0">
 <dict>
+	<key>NSSpeechRecognitionUsageDescription</key>
+	<string>Тоглогчийн нэр, оноо болон тоглох эсэх командыг дуугаар бүртгэхэд ашиглана.</string>
+	<key>NSMicrophoneUsageDescription</key>
+	<string>Тоглоомын бүртгэлийг дуу хоолойгоор оруулахад микрофон ашиглана.</string>
 	<key>CFBundleDevelopmentRegion</key>
 	<string>$(DEVELOPMENT_LANGUAGE)</string>
 	<key>CFBundleDisplayName</key>

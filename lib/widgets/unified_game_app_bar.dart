@@ -28,6 +28,7 @@ class UnifiedGameAppBar extends StatelessWidget implements PreferredSizeWidget {
     this.onAddPlayer,
     this.onRemovePlayer,
     this.onSave,
+    this.onCheckpoint,
     this.onStatistics,
     this.onReport,
     this.onPrint,
@@ -47,6 +48,7 @@ class UnifiedGameAppBar extends StatelessWidget implements PreferredSizeWidget {
   final VoidCallback? onAddPlayer;
   final VoidCallback? onRemovePlayer;
   final FutureOr<void> Function()? onSave;
+  final Future<void> Function()? onCheckpoint;
   final VoidCallback? onStatistics;
   final VoidCallback? onReport;
   final VoidCallback? onPrint;
@@ -59,8 +61,6 @@ class UnifiedGameAppBar extends StatelessWidget implements PreferredSizeWidget {
   final bool canManageGames;
   final bool showGlobalTableBar;
   final bool preferCustomExitAction;
-  final SavedGameSessionsRepository _savedSessionsRepo =
-      SavedGameSessionsRepository();
 
   @override
   Size get preferredSize => const Size.fromHeight(kToolbarHeight);
@@ -304,53 +304,14 @@ class UnifiedGameAppBar extends StatelessWidget implements PreferredSizeWidget {
     final lockId = currentRouteName.substring('active-table:'.length).trim();
     if (lockId.isEmpty) return;
 
-    if (onSave != null) {
-      try {
-        await Future.sync(onSave!);
-      } catch (_) {
-        // Local save failures should not block table navigation.
-      }
-      if (!context.mounted) return;
-    }
+    await onCheckpoint?.call();
+    if (!context.mounted) return;
 
     final repo = ActiveTablesRepository();
-    ActiveTableDetails? details;
-    try {
-      details = await repo
-          .fetchActiveTableDetails(lockId)
-          .timeout(const Duration(seconds: 2));
-    } catch (_) {
-      details = null;
-    }
-    if (!context.mounted || details == null) return;
-
-    SavedGameSession? latest;
-    try {
-      // Try to find by exact player set first.
-      latest = await _savedSessionsRepo
-          .findLatestByGameAndPlayers(
-            gameKey: details.gameKey,
-            selectedUserIds: details.playerUserIds,
-          )
-          .timeout(const Duration(seconds: 2));
-    } catch (_) {
-      latest = null;
-    }
-
-    // If player-based lookup fails, fallback to finding most recent session for this game.
-    if (latest == null) {
-      try {
-        final allSessions = await _savedSessionsRepo.loadSessions();
-        final gameKey = details.gameKey;
-        latest = allSessions.firstWhere(
-          (s) => s.gameKey == gameKey,
-          orElse: () => null as dynamic,
-        ) as SavedGameSession?;
-      } catch (_) {
-        latest = null;
-      }
-    }
-
+    final details = await repo.fetchActiveTableDetails(lockId);
+    if (details == null) return;
+    final latest = await SavedGameSessionsRepository(
+        storageKey: 'toocoob.live_game_checkpoints.v1').findById('live_$lockId');
     final orderedUserIds = _resolveOrderedUserIdsForTable(
       latest,
       fallback: details.playerUserIds,
@@ -632,6 +593,7 @@ class _AnimatedSaveButton extends StatefulWidget {
 
   final FutureOr<void> Function()? onSave;
 
+
   @override
   State<_AnimatedSaveButton> createState() => _AnimatedSaveButtonState();
 }
@@ -736,6 +698,7 @@ class _GlobalTableBar extends StatelessWidget {
       context,
       MaterialPageRoute(
         builder: (context) => PlayingFormatPage(
+          createAdditionalTable: true,
           selectedUserIds: selected,
           currentUserId: currentUserId,
           canManageGames: canManageGames,
@@ -866,13 +829,39 @@ class _GlobalTableBar extends StatelessWidget {
     }
   }
 
+  Future<void> _archiveTable(BuildContext context, ActiveTableSummary table) async {
+    final owner = currentUserId;
+    if (owner == null) return;
+    final repo = ActiveTablesRepository();
+    try {
+      final details = await repo.fetchActiveTableDetails(table.id);
+      if (!context.mounted || details?.ownerUserId != owner) return;
+      final confirmed = await showDialog<bool>(context: context, builder: (ctx) => AlertDialog(
+        title: const Text('Ширээ хаах уу?'),
+        content: const Text('Идэвхтэй ширээний жагсаалтаас гаргана. Хадгалсан тоглолтыг устгахгүй.'),
+        actions: [
+          TextButton(onPressed: () => Navigator.pop(ctx, false), child: const Text('Болих')),
+          TextButton(onPressed: () => Navigator.pop(ctx, true), child: const Text('Ширээ хаах')),
+        ],
+      ));
+      if (confirmed == true) await repo.archiveOwnedTable(table.id, owner);
+    } catch (_) {
+      if (context.mounted) {
+        ScaffoldMessenger.of(context).showSnackBar(
+          const SnackBar(content: Text('Ширээ хааж чадсангүй. Дахин оролдоно уу.')));
+      }
+    }
+  }
+
   Widget _tableButton(
     BuildContext context,
     ActiveTableSummary table,
     bool isCurrent,
   ) {
-    return Tooltip(
-      message: 'Ширээ ${table.tableNumber}: ${table.gameName}',
+    return GestureDetector(
+      onLongPress: isCurrent ? null : () => _archiveTable(context, table),
+      child: Tooltip(
+      message: 'Ширээ ${table.tableNumber}: ${table.gameName}' + (isCurrent ? '' : ' — удаан дарж хаах'),
       child: _HoverExpandableTableButton(
         table: table,
         isCurrent: isCurrent,
@@ -882,6 +871,7 @@ class _GlobalTableBar extends StatelessWidget {
           isCurrent,
           expanded: expanded,
         ),
+      ),
       ),
     );
   }

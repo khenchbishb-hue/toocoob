@@ -1,5 +1,10 @@
+import '../utils/win_voice_controller.dart';
+import '../utils/game108_voice_score.dart';
+import '../widgets/voice_player_cue.dart';
+import '../utils/player_profiles.dart';
+import 'package:toocoob/utils/live_game_state.dart';
 import 'package:flutter/material.dart';
-import 'package:cloud_firestore/cloud_firestore.dart';
+
 import 'package:pdf/widgets.dart' as pw;
 import 'package:printing/printing.dart';
 import 'package:share_plus/share_plus.dart';
@@ -36,9 +41,24 @@ class Game108Page extends StatefulWidget {
   State<Game108Page> createState() => _Game108PageState();
 }
 
-class _Game108PageState extends State<Game108Page> {
-  final SavedGameSessionsRepository _savedSessionsRepo =
-      SavedGameSessionsRepository();
+class _Game108PageState extends State<Game108Page>
+    with LiveGameState<Game108Page> {
+  @override
+  LiveGameSessionsRepository get liveRepository => _savedSessionsRepo;
+  @override
+  String? get liveRegistrar => _currentRegistrarUserId;
+  @override
+  Future<void> saveLiveProgress() => _saveProgress();
+  @override
+  Future<void> restoreLiveProgress(SavedGameSession saved) async {
+    await _tryRestoreSavedSession(remote: saved);
+    _currentRegistrarUserId =
+        saved.payload['currentRegistrarUserId'] as String? ??
+            _currentRegistrarUserId;
+  }
+
+  final LiveGameSessionsRepository _savedSessionsRepo =
+      LiveGameSessionsRepository();
   final ActiveTablesRepository _activeTablesRepo = ActiveTablesRepository();
   int _roundNumber = 1;
   static const int _targetWinnerScore = 108;
@@ -51,6 +71,58 @@ class _Game108PageState extends State<Game108Page> {
   List<_Game108Seat> _orderedSeats = [];
   final Set<String> _restingSeatKeys = <String>{};
   final Set<String> _roundSubmittedSeatKeys = <String>{};
+  int? _nextVoiceSeat;
+  bool _voiceSubmitting = false;
+  late final WinVoiceController _scoreVoice = WinVoiceController(
+    names: () => _currentScoringSeats().map((s) => [s.displayName, s.username]).toList(),
+    canEdit: () => mounted && liveCanEdit && !_voiceSubmitting && ModalRoute.of(context)?.isCurrent == true,
+    parseAction: parseGame108VoiceScore,
+    unit: 'оноо',
+    nextTarget: () => _nextVoiceSeat,
+    apply: (index, score) async {
+      final seats = _currentScoringSeats();
+      if (index < 0 || index >= seats.length) return false;
+      final key = _seatKey(seats[index]);
+      if (_roundSubmittedSeatKeys.contains(key)) return false;
+      setState(() => _scoreInputControllers[key]?.text = '$score');
+      _nextVoiceSeat = null;
+      for (var step = 1; step <= seats.length; step++) {
+        final candidate = (index + step) % seats.length;
+        final candidateKey = _seatKey(seats[candidate]);
+        if (!_roundSubmittedSeatKeys.contains(candidateKey) &&
+            (_scoreInputControllers[candidateKey]?.text.trim() ?? '').isEmpty) {
+          _nextVoiceSeat = candidate;
+          _requestScoreFocusForKey(candidateKey);
+          return true;
+        }
+      }
+      _voiceSubmitting = true;
+      try {
+        final round = _roundNumber;
+        for (final seat in seats) {
+          if (!mounted || _roundNumber != round) break;
+          if (!_roundSubmittedSeatKeys.contains(_seatKey(seat))) await _onTopScoreSubmitted(seat);
+        }
+      } finally { _voiceSubmitting = false; }
+      return true;
+    },
+  )..addListener(_refreshScoreVoice);
+  void _refreshScoreVoice() {
+    if (!mounted) return;
+    setState(() {});
+    final seats = _currentScoringSeats();
+    final index = _scoreVoice.target;
+    if (index != null && index < seats.length) _requestScoreFocusForKey(_seatKey(seats[index]));
+  }
+  bool _voiceSelected(_Game108Seat seat) {
+    final seats = _currentScoringSeats();
+    final index = _scoreVoice.target;
+    return _scoreVoice.enabled && index != null && index < seats.length && _seatKey(seats[index]) == _seatKey(seat);
+  }
+  @override
+  Widget? get liveCommandIndicator => _scoreVoice.indicator;
+  @override
+  Widget? get liveCommandHint => _scoreVoice.stopHint;
   final Map<String, TextEditingController> _scoreInputControllers = {};
   final Map<String, FocusNode> _scoreInputFocusNodes = {};
   String? _currentRegistrarUserId;
@@ -78,10 +150,14 @@ class _Game108PageState extends State<Game108Page> {
     _orderedSeats = _activeSeatsFrom(_seats);
     _syncScoreInputs(_orderedSeats);
     _ensureFocusOnActiveScoreField();
-    _tryRestoreSavedSession();
+    initializeLiveGame(() async {
+      if (widget.selectedUserIds.isNotEmpty) {
+        await _loadSelectedUserProfiles();
+      }
+      if (mounted) await _tryRestoreSavedSession();
+    });
     if (_selectedUserIdsSnapshot.isNotEmpty) {
       _selectedProfilesLoaded = false;
-      _loadSelectedUserProfiles();
     } else {
       WidgetsBinding.instance.addPostFrameCallback((_) {
         _showPlayerOrderDialogIfNeeded();
@@ -117,10 +193,10 @@ class _Game108PageState extends State<Game108Page> {
             : (j['photoUrl'] ?? '').toString(),
       );
 
-  Future<void> _tryRestoreSavedSession() async {
-    final id = widget.initialSavedSessionId;
+  Future<void> _tryRestoreSavedSession({SavedGameSession? remote}) async {
+    final id = remote?.id ?? widget.initialSavedSessionId;
     if (id == null || id.isEmpty) return;
-    final saved = await _savedSessionsRepo.findById(id);
+    final saved = remote ?? await _savedSessionsRepo.findById(id);
     if (saved == null || !mounted) return;
     final p = saved.payload;
 
@@ -135,6 +211,7 @@ class _Game108PageState extends State<Game108Page> {
 
     setState(() {
       _activeSavedSessionId = saved.id;
+      _playerOrderSelected = p['playerOrderSelected'] == true;
       _roundNumber = (p['roundNumber'] as num? ?? _roundNumber).toInt();
       if (seatsRaw.isNotEmpty) _seats = seatsRaw;
       if (orderedRaw.isNotEmpty) _orderedSeats = orderedRaw;
@@ -147,11 +224,18 @@ class _Game108PageState extends State<Game108Page> {
         ..addAll((p['roundSubmittedSeatKeys'] as List? ?? const <dynamic>[])
             .map((e) => e.toString()));
       _syncScoreInputs(_orderedSeats);
+      final inputs = p['scoreInputs'] as Map? ?? {};
+      for (final entry in _scoreInputControllers.entries) {
+        entry.value.text = (inputs[entry.key] ?? '').toString();
+      }
     });
   }
 
   Future<void> _saveProgress() async {
     final payload = {
+      'playerOrderSelected': _playerOrderSelected,
+      'scoreInputs':
+          _scoreInputControllers.map((key, value) => MapEntry(key, value.text)),
       'roundNumber': _roundNumber,
       'seats': _seats.map(_seatToJson).toList(),
       'orderedSeats': _orderedSeats.map(_seatToJson).toList(),
@@ -162,7 +246,11 @@ class _Game108PageState extends State<Game108Page> {
       sessionId: _activeSavedSessionId,
       gameKey: 'game108',
       gameLabel: '108',
-      selectedUserIds: List<String>.from(widget.selectedUserIds),
+      selectedUserIds: _seats
+          .map((p) => p.userId)
+          .whereType<String>()
+          .where((id) => id.isNotEmpty)
+          .toList(),
       payload: payload,
     );
     _activeSavedSessionId = id;
@@ -579,11 +667,7 @@ class _Game108PageState extends State<Game108Page> {
       if (userId == null || userId.isEmpty) continue;
 
       try {
-        final snapshot = await FirebaseFirestore.instance
-            .collection('users')
-            .doc(userId)
-            .get();
-        final data = snapshot.data();
+        final data = await loadPlayerProfile(userId);
         if (data == null) continue;
 
         final fetchedUsername = (data['username'] as String?)?.trim();
@@ -618,7 +702,13 @@ class _Game108PageState extends State<Game108Page> {
     });
   }
 
+  @override
+  void onLiveReady() {
+    if (liveCanEdit) _showPlayerOrderDialogIfNeeded();
+  }
+
   Future<void> _showPlayerOrderDialogIfNeeded() async {
+    if (!liveCanEdit) return;
     if (!mounted || _playerOrderSelected || !_selectedProfilesLoaded) return;
     // Skip if restoring from saved session
     if (widget.initialSavedSessionId != null &&
@@ -767,14 +857,14 @@ class _Game108PageState extends State<Game108Page> {
                                                   errorBuilder:
                                                       (context, _, __) {
                                                     return Image.asset(
-                                                      'assets/13.jpg',
+                                                      'assets/108.jpg',
                                                       fit: BoxFit.cover,
                                                     );
                                                   },
                                                 );
                                               }
                                               return Image.asset(
-                                                'assets/13.jpg',
+                                                'assets/108.jpg',
                                                 fit: BoxFit.cover,
                                               );
                                             },
@@ -788,8 +878,9 @@ class _Game108PageState extends State<Game108Page> {
                                                 end: Alignment.bottomCenter,
                                                 colors: [
                                                   Colors.black
-                                                      .withOpacity(0.05),
-                                                  Colors.black.withOpacity(0.7),
+                                                      .withValues(alpha: 0.05),
+                                                  Colors.black
+                                                      .withValues(alpha: 0.7),
                                                 ],
                                               ),
                                             ),
@@ -1067,14 +1158,14 @@ class _Game108PageState extends State<Game108Page> {
                                                     errorBuilder:
                                                         (context, _, __) {
                                                       return Image.asset(
-                                                        'assets/13.jpg',
+                                                        'assets/108.jpg',
                                                         fit: BoxFit.cover,
                                                       );
                                                     },
                                                   );
                                                 }
                                                 return Image.asset(
-                                                  'assets/13.jpg',
+                                                  'assets/108.jpg',
                                                   fit: BoxFit.cover,
                                                 );
                                               },
@@ -1087,10 +1178,10 @@ class _Game108PageState extends State<Game108Page> {
                                                   begin: Alignment.topCenter,
                                                   end: Alignment.bottomCenter,
                                                   colors: [
+                                                    Colors.black.withValues(
+                                                        alpha: 0.05),
                                                     Colors.black
-                                                        .withOpacity(0.05),
-                                                    Colors.black
-                                                        .withOpacity(0.7),
+                                                        .withValues(alpha: 0.7),
                                                   ],
                                                 ),
                                               ),
@@ -1268,7 +1359,9 @@ class _Game108PageState extends State<Game108Page> {
     );
   }
 
-  Widget _buildMainBlock({required _Game108Seat seat, required int slotIndex}) {
+  Widget _buildMainBlock({required _Game108Seat seat, required int slotIndex}) => VoicePlayerCue(
+    active: _voiceSelected(seat), child: _buildMainBlockContent(seat: seat, slotIndex: slotIndex));
+  Widget _buildMainBlockContent({required _Game108Seat seat, required int slotIndex}) {
     final seatKey = _seatKey(seat);
     final isEliminated = seat.isEliminated;
     final isResting = !isEliminated && _isSeatResting(seat);
@@ -1321,7 +1414,10 @@ class _Game108PageState extends State<Game108Page> {
             _buildBottomMetricsRow(
               seat: seat,
               small: false,
-              scoreField: TextField(
+              scoreField: VoicePlayerCue(active: _voiceSelected(seat), child: TextField(
+                onTap: _scoreVoice.manual,
+                onChanged: (_) => _scoreVoice.manual(),
+                onEditingComplete: () {},
                 controller: _scoreInputControllers[seatKey],
                 focusNode: _scoreInputFocusNodes[seatKey],
                 textAlign: TextAlign.center,
@@ -1342,8 +1438,8 @@ class _Game108PageState extends State<Game108Page> {
                   hintText: '0',
                 ),
                 enabled: !(isEliminated || isResting),
-                onSubmitted: (_) => _onTopScoreSubmitted(seat),
-              ),
+                onSubmitted: (_) { _scoreVoice.manual(); _onTopScoreSubmitted(seat); },
+              )),
             ),
           ],
         ),
@@ -1755,6 +1851,8 @@ class _Game108PageState extends State<Game108Page> {
 
   @override
   void dispose() {
+    _scoreVoice.dispose();
+    stopLiveGame();
     for (final controller in _scoreInputControllers.values) {
       controller.dispose();
     }
@@ -1860,7 +1958,7 @@ class _Game108PageState extends State<Game108Page> {
                   padding:
                       const EdgeInsets.symmetric(horizontal: 8, vertical: 4),
                   decoration: BoxDecoration(
-                    color: Colors.black.withOpacity(0.55),
+                    color: Colors.black.withValues(alpha: 0.55),
                     borderRadius: BorderRadius.circular(14),
                   ),
                   child: Row(
@@ -1903,7 +2001,7 @@ class _Game108PageState extends State<Game108Page> {
           fit: BoxFit.cover,
           errorBuilder: (_, __, ___) => Container(
             decoration: BoxDecoration(
-              color: Colors.white.withOpacity(0.28),
+              color: Colors.white.withValues(alpha: 0.28),
               borderRadius: borderRadius,
             ),
             child: LayoutBuilder(
@@ -1922,7 +2020,7 @@ class _Game108PageState extends State<Game108Page> {
 
     return Container(
       decoration: BoxDecoration(
-        color: Colors.white.withOpacity(0.28),
+        color: Colors.white.withValues(alpha: 0.28),
         borderRadius: borderRadius,
       ),
       child: LayoutBuilder(
@@ -2101,7 +2199,9 @@ class _Game108PageState extends State<Game108Page> {
   }
 
   @override
-  Widget build(BuildContext context) {
+  Widget build(BuildContext context) => buildLiveGame(_buildGame(context));
+
+  Widget _buildGame(BuildContext context) {
     return Scaffold(
       backgroundColor: _tableOrange,
       appBar: UnifiedGameAppBar(
@@ -2138,10 +2238,13 @@ class _Game108PageState extends State<Game108Page> {
         onRemovePlayer: _onRemovePlayerPressed,
         onAddPlayer: _onAddPlayerPressed,
         onSave: _saveProgress,
+          onCheckpoint: () => liveRepository.checkpoint(saveLiveProgress),
         onReport: _showSessionSummaryDialog,
         onSettings: _showSettingsDialog,
         onExit: _showSessionSummaryDialog,
         extraActions: [
+          IconButton(onPressed: liveCanEdit ? _scoreVoice.toggle : null,
+            icon: Icon(_scoreVoice.enabled ? Icons.mic : Icons.mic_none, color: _scoreVoice.enabled ? Colors.greenAccent : null)),
           IconButton(
             tooltip: _canTransferRegistrar
                 ? 'Тоглолт бүртгэх эрх шилжүүлэх'

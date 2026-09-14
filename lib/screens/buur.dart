@@ -1,5 +1,13 @@
+import 'dart:async';
+import 'package:toocoob/utils/game_speech.dart';
+import 'package:toocoob/utils/voice_player_selection.dart';
+import 'package:toocoob/widgets/voice_player_cue.dart';
+import '../utils/player_profiles.dart';
+import 'package:speech_to_text/speech_to_text.dart' as stt;
+import 'package:toocoob/utils/buur_voice_command.dart';
+import 'package:toocoob/utils/live_game_state.dart';
 import 'package:flutter/material.dart';
-import 'package:cloud_firestore/cloud_firestore.dart';
+
 import 'package:pdf/widgets.dart' as pw;
 import 'package:printing/printing.dart';
 import 'package:share_plus/share_plus.dart';
@@ -36,9 +44,23 @@ class BuurPage extends StatefulWidget {
   State<BuurPage> createState() => _BuurPageState();
 }
 
-class _BuurPageState extends State<BuurPage> {
-  final SavedGameSessionsRepository _savedSessionsRepo =
-      SavedGameSessionsRepository();
+class _BuurPageState extends State<BuurPage> with LiveGameState<BuurPage> {
+  @override
+  LiveGameSessionsRepository get liveRepository => _savedSessionsRepo;
+  @override
+  String? get liveRegistrar => _currentRegistrarUserId;
+  @override
+  Future<void> saveLiveProgress() => _saveProgress();
+  @override
+  Future<void> restoreLiveProgress(SavedGameSession saved) async {
+    await _tryRestoreSavedSession(remote: saved);
+    _currentRegistrarUserId =
+        saved.payload['currentRegistrarUserId'] as String? ??
+            _currentRegistrarUserId;
+  }
+
+  final LiveGameSessionsRepository _savedSessionsRepo =
+      LiveGameSessionsRepository();
   static const List<_BuurAction> _actions = [
     _BuurAction(
       keyLabel: '31',
@@ -71,6 +93,191 @@ class _BuurPageState extends State<BuurPage> {
     ),
   ];
 
+  final stt.SpeechToText _speech = stt.SpeechToText();
+  bool _voiceBusy = false;
+  bool _voiceApplied = false;
+  int _voiceSession = 0;
+  String _voiceTranscript = '';
+  int? _voicePlayerIndex;
+  String _voiceActionFragment = '';
+  bool _voiceRestartQueued = false;
+  bool _voiceListening = false;
+  bool _voiceManual = false;
+  bool _voiceHint = true;
+  String? _voiceFeedback;
+  Timer? _voiceReceiptTimer;
+  final Map<int, int> _receiptDeltas = {};
+  int _receiptCenterDelta = 0;
+  int? _voiceReceiptTransfer;
+
+  @override
+  Widget? get liveCommandIndicator => !_voiceBusy ? null : Text(
+      _voiceManual ? 'Гараар бүртгэж байна' : !_voiceListening
+          ? '${_voiceFeedback ?? ''} Түр хүлээнэ үү…'.trim()
+          : _voiceTranscript.isNotEmpty ? 'Таны команд: $_voiceTranscript'
+          : '${_voiceFeedback == null ? '' : '${_voiceFeedback!} • '}Командаа хэлнэ үү',
+      textAlign: TextAlign.center, maxLines: 2, overflow: TextOverflow.ellipsis,
+      style: TextStyle(color: _voiceListening ? Colors.lightGreenAccent : Colors.white70, fontSize: 13));
+  @override
+  Widget? get liveCommandHint => _voiceBusy && _voiceHint
+      ? const Text('Микрофон унтраах: “Боллоо”', textAlign: TextAlign.right,
+          style: TextStyle(color: Colors.white70, fontSize: 12)) : null;
+
+  Future<void> _listenForBuur() async {
+    if (_voiceBusy) {
+      _voiceSession++;
+      _voicePlayerIndex = null;
+      _voiceActionFragment = '';
+      await _speech.cancel();
+      if (mounted) setState(() => _voiceBusy = false);
+      return;
+    }
+    if (!liveCanEdit || _winnerPlayerKey != null) return;
+    setState(() {
+      _voiceBusy = true;
+      _voiceHint = true;
+      _voiceFeedback = null;
+      _voiceApplied = false;
+      _voiceTranscript = '';
+      _voicePlayerIndex = null;
+      _voiceActionFragment = '';
+    });
+    await _startBuurListening();
+  }
+
+  Future<void> _restartBuurListening(int session) async {
+    if (_voiceRestartQueued) return;
+    _voiceRestartQueued = true;
+    await Future<void>.delayed(const Duration(milliseconds: 350));
+    _voiceRestartQueued = false;
+    if (!mounted || session != _voiceSession || !_voiceBusy ||
+        _voiceManual || _speech.isListening) {
+      return;
+    }
+    // Close the old recognizer and its timeout before starting another listen.
+    _voiceSession++;
+    await _speech.cancel();
+    if (!mounted || !_voiceBusy || _voiceSession != session + 1) return;
+    await _startBuurListening();
+  }
+
+  Future<void> _startBuurListening() async {
+    final session = ++_voiceSession;
+    setState(() { _voiceApplied = false; _voiceListening = false; _voiceTranscript = ''; });
+    try {
+      final ready = await initializeGameSpeech(_speech,
+        onStatus: (status) {
+          if (!mounted || session != _voiceSession || !_voiceBusy) return;
+          if (status == 'listening') setState(() => _voiceListening = true);
+          if (status == 'done' || status == 'notListening') {
+            setState(() => _voiceListening = false);
+            _restartBuurListening(session);
+          }
+        },
+        onError: (error) {
+          if (!mounted || session != _voiceSession) return;
+          setState(() {
+            _voiceListening = false;
+            _voiceFeedback = 'Дуу таних алдаа: ${error.errorMsg}. Микрофоныг дахин асаана уу';
+            _voicePlayerIndex = null;
+            _voiceActionFragment = '';
+            _voiceSession++;
+          });
+        },
+      );
+      if (!mounted || session != _voiceSession) return;
+      if (!ready) throw StateError('Микрофон ашиглах боломжгүй байна.');
+      final locales = await _speech.locales();
+      if (!mounted || session != _voiceSession) return;
+      final mongolian = locales.where((l) => l.localeId.toLowerCase().startsWith('mn')).firstOrNull;
+      await _speech.listen(
+        listenOptions: stt.SpeechListenOptions(
+          localeId: mongolian?.localeId ?? 'mn-MN',
+          listenFor: const Duration(seconds: 30),
+          partialResults: true,
+        ),
+        onResult: (result) {
+          if (!mounted || session != _voiceSession || _voiceApplied || _voiceManual || !liveCanEdit || _winnerPlayerKey != null) return;
+          final names = _players.map((p) => [p.displayName, p.username]).toList();
+          final normalized = normalizeBuurSpeech(result.recognizedWords);
+          if (result.finalResult && RegExp(r'(^|\s)боллоо($|\s)').hasMatch(normalized)) {
+            _listenForBuur();
+            return;
+          }
+          final mention = lastVoicePlayerMention(normalized,
+              names.map((names) => names.expand(buurNameAliases)).toList());
+          setState(() {
+            _voiceTranscript = result.recognizedWords;
+            if (mention != null) {
+              final index = mention.playerIndex;
+              if (index != _voicePlayerIndex) _voiceActionFragment = '';
+              _voicePlayerIndex = index != null && !_players[index].isEliminated
+                  ? index : null;
+              if (_voicePlayerIndex != null) _voiceHint = false;
+            }
+          });
+          if (!result.finalResult) return;
+          var command = parseBuurVoiceCommand(normalized, names);
+          // Only join command fragments for the acknowledged player. Never
+          // discard unknown words or borrow an action from another name.
+          if (command == null && _voicePlayerIndex != null &&
+              (mention == null || mention.start == 0)) {
+            final actionText = mention == null ? normalized
+                : normalized.substring(mention.end).trim();
+            final joined = '$_voiceActionFragment $actionText'.trim();
+            final transfer = parseBuurVoiceAction(actionText) ??
+                (_voiceActionFragment.isNotEmpty ? parseBuurVoiceAction(joined) : null);
+            if (transfer != null) {
+              command = (playerIndex: _voicePlayerIndex!, transfer: transfer);
+            } else if (isBuurVoiceActionPrefix(actionText)) {
+              _voiceActionFragment = actionText;
+            } else if (isBuurVoiceActionPrefix(joined)) {
+              _voiceActionFragment = joined;
+            } else if (actionText.isNotEmpty) {
+              _voiceActionFragment = '';
+            }
+          }
+          if (command == null) {
+            setState(() => _voiceFeedback = mention != null && normalized.substring(mention.end).trim().isEmpty
+                ? 'Буурын төрлөө хэлнэ үү' : 'Танигдсангүй. Дахин хэлнэ үү');
+            _speech.stop();
+            _restartBuurListening(session);
+            return;
+          }
+          final resolved = command;
+          final previousPishka = _players[resolved.playerIndex].pishka;
+          _applyAction(
+            playerIndex: resolved.playerIndex,
+            action: _actions.firstWhere((action) => action.transfer == resolved.transfer),
+          );
+          if (_players[resolved.playerIndex].pishka == previousPishka) {
+            setState(() => _voiceFeedback = 'Энэ үйлдлийг одоо бүртгэх боломжгүй');
+            _speech.stop();
+            _restartBuurListening(session);
+            return;
+          }
+          _voiceApplied = true;
+          _voicePlayerIndex = null;
+          _voiceActionFragment = '';
+          _speech.stop();
+          setState(() {
+            const labels = {1: 'оноо хүрлээ', 2: 'хөзөр', 3: 'тамга', 4: 'ботго'};
+            _voiceFeedback = '✓ ${_players[resolved.playerIndex].displayName} — ${labels[resolved.transfer]}';
+            _voiceListening = false;
+            _voiceHint = true;
+          });
+          _restartBuurListening(session);
+        },
+      );
+    } catch (error) {
+      if (!mounted || session != _voiceSession) return;
+      setState(() {
+        _voiceListening = false;
+        _voiceFeedback = 'Микрофон асаахад алдаа гарлаа: $error';
+      });
+    }
+  }
+
   late List<_BuurPlayer> _players;
   late int _initialCenterScore;
   late int _centerScore;
@@ -99,17 +306,18 @@ class _BuurPageState extends State<BuurPage> {
     _initialCenterScore = _calculateInitialCenterScore(_players.length);
     _centerScore = _initialCenterScore;
 
-    _tryRestoreSavedSession();
-
-    if (widget.selectedUserIds.isNotEmpty) {
-      _loadSelectedUserProfiles();
-    }
+    initializeLiveGame(() async {
+      if (widget.selectedUserIds.isNotEmpty) {
+        await _loadSelectedUserProfiles();
+      }
+      if (mounted) await _tryRestoreSavedSession();
+    });
   }
 
-  Future<void> _tryRestoreSavedSession() async {
-    final id = widget.initialSavedSessionId;
+  Future<void> _tryRestoreSavedSession({SavedGameSession? remote}) async {
+    final id = remote?.id ?? widget.initialSavedSessionId;
     if (id == null || id.isEmpty) return;
-    final saved = await _savedSessionsRepo.findById(id);
+    final saved = remote ?? await _savedSessionsRepo.findById(id);
     if (saved == null || !mounted) return;
     final p = saved.payload;
 
@@ -193,7 +401,11 @@ class _BuurPageState extends State<BuurPage> {
       sessionId: _activeSavedSessionId,
       gameKey: 'buur',
       gameLabel: 'Буур',
-      selectedUserIds: List<String>.from(widget.selectedUserIds),
+      selectedUserIds: _players
+          .map((p) => p.userId)
+          .whereType<String>()
+          .where((id) => id.isNotEmpty)
+          .toList(),
       payload: payload,
     );
     _activeSavedSessionId = id;
@@ -315,11 +527,7 @@ class _BuurPageState extends State<BuurPage> {
       if (userId == null || userId.isEmpty) continue;
 
       try {
-        final snapshot = await FirebaseFirestore.instance
-            .collection('users')
-            .doc(userId)
-            .get();
-        final data = snapshot.data();
+        final data = await loadPlayerProfile(userId);
         if (data == null) continue;
 
         final username = (data['username'] as String?)?.trim();
@@ -362,6 +570,7 @@ class _BuurPageState extends State<BuurPage> {
         _players[playerIndex] =
             actor.copyWith(pishka: actor.pishka + fromCenter);
         _centerScore -= fromCenter;
+        _showTransferReceipt(action.transfer, {playerIndex: fromCenter}, -fromCenter);
 
         if (_centerScore == 0) {
           _markZeroPishkaAsEliminated();
@@ -374,6 +583,7 @@ class _BuurPageState extends State<BuurPage> {
       if (actor.pishka <= 0) return;
 
       int totalTaken = 0;
+      final deltas = <int, int>{};
       for (int i = 0; i < _players.length; i++) {
         if (i == playerIndex) continue;
         final other = _players[i];
@@ -384,6 +594,7 @@ class _BuurPageState extends State<BuurPage> {
         if (taken <= 0) continue;
 
         totalTaken += taken;
+        deltas[i] = -taken;
         final nextOther = other.pishka - taken;
         _players[i] = other.copyWith(
           pishka: nextOther,
@@ -395,11 +606,36 @@ class _BuurPageState extends State<BuurPage> {
         final refreshedActor = _players[playerIndex];
         _players[playerIndex] =
             refreshedActor.copyWith(pishka: refreshedActor.pishka + totalTaken);
+        deltas[playerIndex] = totalTaken;
+        _showTransferReceipt(action.transfer, deltas, 0);
       }
 
       _resolveWinnerIfAny();
     });
   }
+
+  // Called inside the same state update as the actual transfer.
+  void _showTransferReceipt(int transfer, Map<int, int> deltas, int centerDelta) {
+    _receiptDeltas..clear()..addAll(deltas);
+    _receiptCenterDelta = centerDelta;
+    _voiceReceiptTransfer = transfer;
+    _voiceReceiptTimer?.cancel();
+    _voiceReceiptTimer = Timer(const Duration(milliseconds: 1200), () {
+      if (mounted) setState(() {
+        _receiptDeltas.clear();
+        _receiptCenterDelta = 0;
+        _voiceReceiptTransfer = null;
+      });
+    });
+  }
+
+  Widget _transferBadge(int delta) => IgnorePointer(child: Container(
+    padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 6),
+    decoration: BoxDecoration(color: delta > 0 ? Colors.green.shade800 : Colors.red.shade800,
+        borderRadius: BorderRadius.circular(18)),
+    child: Text('${delta > 0 ? '+' : '−'}${delta.abs()}',
+        style: const TextStyle(color: Colors.white, fontSize: 24, fontWeight: FontWeight.bold)),
+  ));
 
   void _markZeroPishkaAsEliminated() {
     _players = _players
@@ -801,7 +1037,9 @@ class _BuurPageState extends State<BuurPage> {
   }
 
   @override
-  Widget build(BuildContext context) {
+  Widget build(BuildContext context) => buildLiveGame(_buildGame(context));
+
+  Widget _buildGame(BuildContext context) {
     return WillPopScope(
       onWillPop: () async {
         if (widget.autoReturnOnWinner) {
@@ -840,6 +1078,7 @@ class _BuurPageState extends State<BuurPage> {
             );
           },
           onSave: _saveProgress,
+          onCheckpoint: () => liveRepository.checkpoint(saveLiveProgress),
           onStatistics: _openStatisticsDashboard,
           onReport: _showSessionReportDialog,
           onSettings: _showSettingsDialog,
@@ -851,6 +1090,12 @@ class _BuurPageState extends State<BuurPage> {
             await _showExitReportAndFinish();
           },
           extraActions: [
+            IconButton(
+              tooltip: _voiceBusy ? 'Сонсохыг зогсоох' : 'Нэр + тоо хүрлээ / хөзрөн буур / тамган буур / ботгон буур',
+              onPressed: liveCanEdit ? _listenForBuur : null,
+              icon: Icon(_voiceBusy ? Icons.mic : Icons.mic_none,
+                color: _voiceBusy ? Colors.greenAccent : null),
+            ),
             IconButton(
               tooltip: _canTransferRegistrar
                   ? 'Тоглолт бүртгэх эрх шилжүүлэх'
@@ -919,6 +1164,15 @@ class _BuurPageState extends State<BuurPage> {
             constraints.hasBoundedHeight ? constraints.maxHeight : 220.0;
 
         return Draggable<int>(
+          onDragStarted: () {
+            _voiceSession++;
+            _speech.cancel();
+            setState(() { _voiceManual = true; _voicePlayerIndex = null; _voiceActionFragment = ''; });
+          },
+          onDragEnd: (_) {
+            setState(() => _voiceManual = false);
+            if (_voiceBusy) _startBuurListening();
+          },
           data: playerIndex,
           feedback: Material(
             color: Colors.transparent,
@@ -939,6 +1193,18 @@ class _BuurPageState extends State<BuurPage> {
   }
 
   Widget _buildPlayerCard(_BuurPlayer player, int order,
+      {bool dragging = false}) => VoicePlayerCue(
+        active: liveCanEdit && _voiceBusy && !_voiceApplied &&
+            _voicePlayerIndex == order - 1 && !player.isEliminated &&
+            _winnerPlayerKey == null,
+        child: Stack(fit: StackFit.passthrough, children: [
+          _buildPlayerCardContent(player, order, dragging: dragging),
+          if (!dragging && _receiptDeltas.containsKey(order - 1))
+            Positioned(top: 12, right: 12, child: _transferBadge(_receiptDeltas[order - 1]!)),
+        ]),
+      );
+
+  Widget _buildPlayerCardContent(_BuurPlayer player, int order,
       {bool dragging = false}) {
     final isEliminated = player.isEliminated;
     final isWinner = _winnerPlayerKey == _playerKey(player, order - 1);
@@ -1247,6 +1513,7 @@ class _BuurPageState extends State<BuurPage> {
       child: Stack(
         fit: StackFit.expand,
         children: [
+
           Image.asset(
             'assets/buttons/huree buur.jpg',
             fit: BoxFit.fill,
@@ -1269,6 +1536,8 @@ class _BuurPageState extends State<BuurPage> {
               ),
             ),
           ),
+          if (_receiptCenterDelta != 0)
+            Positioned(top: 6, right: 6, child: _transferBadge(_receiptCenterDelta)),
         ],
       ),
     );
@@ -1291,7 +1560,7 @@ class _BuurPageState extends State<BuurPage> {
         _applyAction(playerIndex: details.data, action: action);
       },
       builder: (context, candidateData, rejectedData) {
-        final isHovering = candidateData.isNotEmpty;
+        final isHovering = candidateData.isNotEmpty || _voiceReceiptTransfer == action.transfer;
         return AnimatedContainer(
           duration: const Duration(milliseconds: 120),
           clipBehavior: Clip.antiAlias,
@@ -1304,7 +1573,7 @@ class _BuurPageState extends State<BuurPage> {
             ),
             boxShadow: [
               BoxShadow(
-                color: Colors.black.withOpacity(0.14),
+                color: Colors.black.withValues(alpha: 0.14),
                 blurRadius: isHovering ? 12 : 6,
                 offset: const Offset(0, 2),
               ),
@@ -1315,12 +1584,22 @@ class _BuurPageState extends State<BuurPage> {
             children: [
               if (action.imagePath != null)
                 Image.asset(action.imagePath!, fit: BoxFit.fill),
-              if (isHovering) Container(color: Colors.white.withOpacity(0.18)),
+              if (isHovering)
+                Container(color: Colors.white.withValues(alpha: 0.18)),
             ],
           ),
         );
       },
     );
+  }
+
+  @override
+  void dispose() {
+    _voiceReceiptTimer?.cancel();
+    _voiceSession++;
+    _speech.cancel();
+    stopLiveGame();
+    super.dispose();
   }
 }
 

@@ -7,11 +7,13 @@ class PlayingFormatPage extends StatefulWidget {
     required this.selectedUserIds,
     this.currentUserId,
     this.canManageGames = false,
+    this.createAdditionalTable = false,
   });
 
   final List<String> selectedUserIds;
   final String? currentUserId;
   final bool canManageGames;
+  final bool createAdditionalTable;
 
   @override
   State<PlayingFormatPage> createState() => _PlayingFormatPageState();
@@ -90,6 +92,7 @@ class _PlayingFormatPageState extends State<PlayingFormatPage> {
               context,
               MaterialPageRoute(
                 builder: (context) => KindsOfGamePage(
+                  createAdditionalTable: widget.createAdditionalTable,
                   selectedUserIds: widget.selectedUserIds,
                   playingFormat: format,
                   currentUserId: widget.currentUserId,
@@ -127,8 +130,8 @@ class _PlayingFormatPageState extends State<PlayingFormatPage> {
                         begin: Alignment.topCenter,
                         end: Alignment.bottomCenter,
                         colors: [
-                          Colors.black.withOpacity(0.3),
-                          Colors.black.withOpacity(0.7),
+                          Colors.black.withValues(alpha: 0.3),
+                          Colors.black.withValues(alpha: 0.7),
                         ],
                       ),
                     ),

@@ -1,0 +1,113 @@
+rules_version = '2';
+service cloud.firestore {
+  match /databases/{database}/documents {
+    function signedIn() { return request.auth != null; }
+    function member(groupId) { return signedIn() && exists(/databases/$(database)/documents/groups/$(groupId)/members/$(request.auth.uid)); }
+    function owner(groupId) { return signedIn() && get(/databases/$(database)/documents/groups/$(groupId)).data.ownerUid == request.auth.uid; }
+    match /users/{userId} {
+      allow read: if signedIn() && request.auth.uid == userId;
+      allow create: if signedIn()
+        && request.auth.uid == userId
+        && request.resource.data.uid == request.auth.uid
+        && request.resource.data.email == request.auth.token.email
+        && request.resource.data.role == 'user'
+        && request.resource.data.keys().hasOnly([
+          'uid', 'lastName', 'firstName', 'nickname', 'phone', 'email',
+          'role', 'createdAt', 'updatedAt'
+        ]);
+      allow update: if signedIn() && request.auth.uid == userId
+        && request.resource.data.diff(resource.data).affectedKeys().hasOnly(['photoUrl', 'bankDetails', 'updatedAt'])
+        && (!request.resource.data.diff(resource.data).affectedKeys().hasAny(['photoUrl']) || (request.resource.data.photoUrl is string
+        && request.resource.data.photoUrl.size() < 2048
+        && request.resource.data.photoUrl.matches('https://res[.]cloudinary[.]com/pkrbzrqh/image/upload/.+')))
+        && (!request.resource.data.diff(resource.data).affectedKeys().hasAny(['bankDetails']) || (
+          request.resource.data.bankDetails is map
+          && request.resource.data.bankDetails.keys().hasOnly(['bank', 'iban', 'account'])
+          && request.resource.data.bankDetails.bank is string
+          && request.resource.data.bankDetails.bank.size() <= 150
+          && request.resource.data.bankDetails.iban is string
+          && request.resource.data.bankDetails.iban.size() <= 64
+          && request.resource.data.bankDetails.account is string
+          && request.resource.data.bankDetails.account.size() <= 64))
+        && request.resource.data.updatedAt == request.time;
+      allow delete: if false;
+    }
+    match /groups/{groupId} {
+      allow read: if signedIn() && (resource.data.isDiscoverable == true || member(groupId));
+      allow write: if false;
+      match /members/{memberId} { allow read: if member(groupId); allow write: if false; }
+      match /joinRequests/{requestId} { allow read: if owner(groupId) || (signedIn() && requestId == request.auth.uid); allow write: if false; }
+      match /pendingMembers/{pendingId} { allow read, write: if false; }
+    }
+
+    match /active_tables/{tableId} {
+      allow read: if signedIn();
+      allow create: if signedIn()
+        && request.resource.data.ownerUserId == request.auth.uid;
+      allow update, delete: if signedIn()
+        && resource.data.ownerUserId == request.auth.uid;
+      allow update: if signedIn()
+        && get(/databases/$(database)/documents/active_tables/$(tableId)/game_states/session).data.registrarUserId == request.auth.uid
+        && request.resource.data.diff(resource.data).affectedKeys()
+          .hasOnly(['playerUserIds', 'savedSessionId', 'updatedAt']);
+
+      match /poker_table_states/{tableNumber} {
+        function activeTable() {
+          return get(/databases/$(database)/documents/active_tables/$(tableId));
+        }
+        function assignedRegistrar() {
+          return activeTable().data.tableRegistrarUserIds[tableNumber];
+        }
+        allow read: if signedIn()
+          && request.auth.uid in activeTable().data.playerUserIds;
+        allow create, update: if signedIn()
+          && (activeTable().data.ownerUserId == request.auth.uid
+            || assignedRegistrar() == request.auth.uid)
+          && ((tableNumber == '1' && request.resource.data.tableNumber == 1)
+            || (tableNumber == '2' && request.resource.data.tableNumber == 2))
+          && request.resource.data.writerUserId == request.auth.uid;
+        allow delete: if signedIn()
+          && activeTable().data.ownerUserId == request.auth.uid;
+      }
+
+      match /game_states/{stateKey} {
+        function activeTable() {
+          return get(/databases/$(database)/documents/active_tables/$(tableId));
+        }
+        function assignedTableRegistrar() {
+          return (stateKey == 'table_1'
+              && activeTable().data.tableRegistrarUserIds['1'] == request.auth.uid)
+            || (stateKey == 'table_2'
+              && activeTable().data.tableRegistrarUserIds['2'] == request.auth.uid);
+        }
+        allow read: if signedIn()
+          && (request.auth.uid == activeTable().data.ownerUserId
+            || request.auth.uid in activeTable().data.playerUserIds);
+        allow create, update: if signedIn()
+          && stateKey != 'session'
+          && (activeTable().data.ownerUserId == request.auth.uid
+            || assignedTableRegistrar())
+          && request.resource.data.stateKey == stateKey
+          && request.resource.data.writerUserId == request.auth.uid;
+        function validSession() {
+          return request.resource.data.stateKey == 'session'
+            && request.resource.data.writerUserId == request.auth.uid
+            && request.resource.data.payloadJson is string
+            && request.resource.data.playerUserIds is list
+            && (request.resource.data.registrarUserId == activeTable().data.ownerUserId
+              || request.resource.data.registrarUserId in request.resource.data.playerUserIds);
+        }
+        allow create: if signedIn() && stateKey == 'session'
+          && activeTable().data.ownerUserId == request.auth.uid
+          && request.resource.data.revision == 1 && validSession();
+        allow update: if signedIn() && stateKey == 'session'
+          && (activeTable().data.ownerUserId == request.auth.uid
+            || resource.data.registrarUserId == request.auth.uid)
+          && request.resource.data.revision == resource.data.revision + 1
+          && validSession();
+        allow delete: if signedIn()
+          && activeTable().data.ownerUserId == request.auth.uid;
+      }
+    }
+  }
+}

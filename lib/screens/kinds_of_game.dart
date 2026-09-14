@@ -1,8 +1,10 @@
+import 'package:firebase_auth/firebase_auth.dart';
+import '../utils/player_profiles.dart';
 import 'package:flutter/material.dart';
 import 'dart:io' show Platform;
 import 'package:flutter/foundation.dart' show kIsWeb;
 import 'package:flutter/services.dart';
-import 'package:cloud_firestore/cloud_firestore.dart';
+
 import 'package:uuid/uuid.dart';
 import '13_card_poker.dart';
 import 'ios/13_card_poker_ios.dart';
@@ -33,6 +35,7 @@ class KindsOfGamePage extends StatefulWidget {
     this.currentUserId,
     this.canManageGames = false,
     this.initialSavedSessionId,
+    this.createAdditionalTable = false,
   });
 
   final List<String> selectedUserIds;
@@ -40,12 +43,16 @@ class KindsOfGamePage extends StatefulWidget {
   final String? currentUserId;
   final bool canManageGames;
   final String? initialSavedSessionId;
+  final bool createAdditionalTable;
 
   @override
   State<KindsOfGamePage> createState() => _KindsOfGamePageState();
 }
 
 class _KindsOfGamePageState extends State<KindsOfGamePage> {
+  String? get _effectiveUserId => widget.currentUserId ?? FirebaseAuth.instance.currentUser?.uid;
+  bool _openingTable = false;
+
   int _multiSettlementUnit = 10000;
 
   final SavedGameSessionsRepository _savedSessionsRepo =
@@ -63,10 +70,13 @@ class _KindsOfGamePageState extends State<KindsOfGamePage> {
     5, // Ходрох
     7, // Дурак
   };
-  static const int _twoPlayerChampionWins = 4;
-  static const int _threePlayerChampionWins = 4;
   static const int _index501 = 8;
   static const int _indexCanasta = 9;
+  static const Map<int, Set<int>> _exactPlayerCountsByGameIndex =
+      <int, Set<int>>{
+    _index501: <int>{3, 4, 5, 6, 7},
+    _indexCanasta: <int>{4, 6},
+  };
 
   // For multi-format: track per-player wins (userId → count)
   final Map<String, int> _multiWins = {};
@@ -171,9 +181,7 @@ class _KindsOfGamePageState extends State<KindsOfGamePage> {
     final Map<String, String> photoUrls = {};
     for (final uid in widget.selectedUserIds) {
       try {
-        final snap =
-            await FirebaseFirestore.instance.collection('users').doc(uid).get();
-        final data = snap.data();
+        final data = await loadPlayerProfile(uid);
         if (data != null) {
           final uname = (data['username'] as String?)?.trim() ?? uid;
           final dname = (data['displayName'] as String?)?.trim() ?? uname;
@@ -203,10 +211,29 @@ class _KindsOfGamePageState extends State<KindsOfGamePage> {
 
   bool _isCompatibleForMulti(int index) {
     if (_isThreePlayerTieBreaker) {
-      return _twoPlayerAllowedGameIndices.contains(index);
+      final tiePlayerCount = _threePlayerTieBreakerUserIds.length;
+      // A tie-break must produce one person; team-based Canasta cannot do that.
+      if (index == _indexCanasta) return false;
+      if (tiePlayerCount == 2) {
+        return _twoPlayerAllowedGameIndices.contains(index);
+      }
+      if (index == _index501) {
+        return (tiePlayerCount >= 3 && tiePlayerCount <= 7) &&
+            _include501ForMulti;
+      }
+      if (index == _indexCanasta) {
+        return (tiePlayerCount == 4 || tiePlayerCount == 6) &&
+            _includeCanastaForMulti;
+      }
+      return index < _gameMinPlayers.length &&
+          _gameMinPlayers[index] < 99 &&
+          tiePlayerCount >= _gameMinPlayers[index];
     }
 
     if (index >= _gameMinPlayers.length) return false;
+    if (!_isPlayerCountAllowed(index, widget.selectedUserIds.length)) {
+      return false;
+    }
     final min = _gameMinPlayers[index];
     if (min >= 99 || widget.selectedUserIds.length < min) return false;
 
@@ -215,13 +242,32 @@ class _KindsOfGamePageState extends State<KindsOfGamePage> {
       return _twoPlayerAllowedGameIndices.contains(index);
     }
 
-    // In 3+ player multi-format, 501/canasta are optional and must be enabled.
-    if (widget.selectedUserIds.length >= 3) {
-      if (index == _index501 && !_include501ForMulti) return false;
-      if (index == _indexCanasta && !_includeCanastaForMulti) return false;
+    final playerCount = widget.selectedUserIds.length;
+    if (index == _index501) {
+      return (playerCount >= 3 && playerCount <= 7) && _include501ForMulti;
+    }
+    if (index == _indexCanasta) {
+      return (playerCount == 4 || playerCount == 6) && _includeCanastaForMulti;
     }
 
     return true;
+  }
+
+  bool _isPlayerCountAllowed(int index, int playerCount) {
+    if (index < 0 || index >= _gameMinPlayers.length) return false;
+    final exactCounts = _exactPlayerCountsByGameIndex[index];
+    if (exactCounts != null) return exactCounts.contains(playerCount);
+    final minimum = _gameMinPlayers[index];
+    return minimum < 99 && playerCount >= minimum;
+  }
+
+  String _playerCountRequirementLabel(int index) {
+    final exactCounts = _exactPlayerCountsByGameIndex[index];
+    if (exactCounts != null) {
+      final sorted = exactCounts.toList()..sort();
+      return '${sorted.join(' эсвэл ')} тоглогч';
+    }
+    return '${_gameMinPlayers[index]}+ тоглогч';
   }
 
   List<int> get _compatibleGameIndices =>
@@ -248,39 +294,29 @@ class _KindsOfGamePageState extends State<KindsOfGamePage> {
     return current;
   }
 
-  bool get _hasTwoPlayerEarlyChampion {
-    if (widget.selectedUserIds.length != 2) return false;
-    for (final uid in widget.selectedUserIds) {
-      if ((_multiWins[uid] ?? 0) >= _twoPlayerChampionWins) {
-        return true;
-      }
-    }
-    return false;
-  }
-
-  bool get _hasThreePlayerEarlyChampion {
-    if (_isThreePlayerTieBreaker || widget.selectedUserIds.length != 3) {
+  bool get _hasUncatchableMultiLeader {
+    if (_isThreePlayerTieBreaker || widget.selectedUserIds.length < 2) {
       return false;
     }
-    for (final uid in widget.selectedUserIds) {
-      if ((_multiWins[uid] ?? 0) >= _threePlayerChampionWins) {
-        return true;
-      }
-    }
-    return false;
+    final remainingTypes = _compatibleGameIndices
+        .where((index) => !_completedGameIndexes.contains(index))
+        .length;
+    final wins = widget.selectedUserIds
+        .map((userId) => _multiWins[userId] ?? 0)
+        .toList()
+      ..sort((a, b) => b.compareTo(a));
+    return wins.length >= 2 && wins.first > wins[1] + remainingTypes;
   }
 
   List<String> get _activeGameUserIds {
-    if (_isThreePlayerTieBreaker && _threePlayerTieBreakerUserIds.length == 2) {
+    if (_isThreePlayerTieBreaker && _threePlayerTieBreakerUserIds.length >= 2) {
       return List<String>.from(_threePlayerTieBreakerUserIds);
     }
     return List<String>.from(widget.selectedUserIds);
   }
 
   bool _shouldStartThreePlayerTieBreaker() {
-    if (_isThreePlayerTieBreaker || widget.selectedUserIds.length != 3) {
-      return false;
-    }
+    if (_isThreePlayerTieBreaker) return false;
 
     final sorted = List<String>.from(widget.selectedUserIds)
       ..sort((a, b) => (_multiWins[b] ?? 0).compareTo(_multiWins[a] ?? 0));
@@ -288,10 +324,8 @@ class _KindsOfGamePageState extends State<KindsOfGamePage> {
 
     final topWins = _multiWins[sorted[0]] ?? 0;
     if ((_multiWins[sorted[1]] ?? 0) != topWins) return false;
-    if (topWins < 3) return false;
-
     final topPlayers = sorted.where((uid) => (_multiWins[uid] ?? 0) == topWins);
-    return topPlayers.length == 2;
+    return topPlayers.length >= 2;
   }
 
   Future<void> _startThreePlayerTieBreaker() async {
@@ -300,9 +334,8 @@ class _KindsOfGamePageState extends State<KindsOfGamePage> {
     final topWins = _multiWins[sorted.first] ?? 0;
     final tied = sorted
         .where((uid) => (_multiWins[uid] ?? 0) == topWins)
-        .take(2)
         .toList(growable: false);
-    if (tied.length != 2) return;
+    if (tied.length < 2) return;
 
     if (mounted) {
       setState(() {
@@ -312,15 +345,15 @@ class _KindsOfGamePageState extends State<KindsOfGamePage> {
     }
 
     if (!mounted) return;
-    final firstName = _playerDisplayNames[tied[0]] ?? tied[0];
-    final secondName = _playerDisplayNames[tied[1]] ?? tied[1];
+    final tiedNames =
+        tied.map((userId) => _playerDisplayNames[userId] ?? userId).join(', ');
     await showDialog<void>(
       context: context,
       builder: (ctx) => AlertDialog(
         title: const Text('Эцсийн ялалт тодруулах тоглолт'),
         content: Text(
-          '$firstName болон $secondName тэнцсэн байна.\n\n'
-          '2 тоглогчтой үед тоглож болох төрлөөс нэгийг сонгон эцсийн ялагчийг тодруулна уу.',
+          '$tiedNames тэнцсэн байна.\n\n'
+          'Эдгээр тоглогчдын тоонд тохирох төрлөөс сонгон цор ганц ялагчийг тодруулна уу.',
         ),
         actions: [
           TextButton(
@@ -344,50 +377,21 @@ class _KindsOfGamePageState extends State<KindsOfGamePage> {
     required Widget page,
     required List<String> activeUserIds,
   }) async {
-    final gameKey = _indexToGameKey[gameIndex];
-
-    if (gameKey != null) {
-      final reusable = await _findReusableActiveTable(
-        gameKey: gameKey,
-        activeUserIds: activeUserIds,
-      );
-
-      if (reusable != null) {
-        String? resolvedSavedSessionId = reusable.savedSessionId;
-        if (resolvedSavedSessionId == null || resolvedSavedSessionId.isEmpty) {
-          final latest = await _savedSessionsRepo.findLatestByGameAndPlayers(
-            gameKey: reusable.gameKey,
-            selectedUserIds: reusable.playerUserIds,
-          );
-          resolvedSavedSessionId = latest?.id;
-          if (resolvedSavedSessionId != null &&
-              resolvedSavedSessionId.isNotEmpty) {
-            _activeTablesRepo.updateSavedSessionId(
-              reusable.id,
-              resolvedSavedSessionId,
-            );
-          }
-        }
-
-        final resumedPage = _buildPageForActiveTable(
-          reusable,
-          initialSavedSessionId: resolvedSavedSessionId,
-        );
-        if (resumedPage != null) {
-          final routeName = 'active-table:${reusable.id}';
-          return Navigator.push(
-            context,
-            MaterialPageRoute(
-              settings: RouteSettings(name: routeName),
-              builder: (context) => ActiveTableRouteScope(
-                routeName: routeName,
-                child: resumedPage,
-              ),
-            ),
-          );
-        }
-      }
+    if (_openingTable) return null;
+    _openingTable = true;
+    try {
+      return await _openGameTable(gameIndex: gameIndex, page: page, activeUserIds: activeUserIds);
+    } finally {
+      _openingTable = false;
     }
+  }
+
+  Future<dynamic> _openGameTable({
+    required int gameIndex,
+    required Widget page,
+    required List<String> activeUserIds,
+  }) async {
+    final gameKey = _indexToGameKey[gameIndex];
 
     String? lockId;
     int? tableNumber;
@@ -398,170 +402,32 @@ class _KindsOfGamePageState extends State<KindsOfGamePage> {
         gameName: _gameNameForIndex(gameIndex),
         playerUserIds: List<String>.from(activeUserIds),
         playingFormat: widget.playingFormat,
-        ownerUserId: widget.currentUserId,
+        ownerUserId: _effectiveUserId,
         tableNumber: tableNumber,
+
       );
+
     } catch (_) {
-      // Lock failure should not block gameplay navigation.
+      if (mounted) {
+        ScaffoldMessenger.of(context).showSnackBar(const SnackBar(
+          content: Text('Ширээ нээж чадсангүй. Холболтоо шалгаад дахин оролдоно уу.'),
+        ));
+      }
+      return null;
     }
 
-    final routeName = lockId == null ? null : 'active-table:$lockId';
+    if (!mounted) return null;
+    final routeName = 'active-table:$lockId';
     return Navigator.push(
       context,
       MaterialPageRoute(
         settings: RouteSettings(name: routeName),
-        builder: (context) => routeName == null
-            ? page
-            : ActiveTableRouteScope(
+        builder: (context) => ActiveTableRouteScope(
                 routeName: routeName,
                 child: page,
               ),
       ),
     );
-  }
-
-  bool _sameUserSet(List<String> a, List<String> b) {
-    final aa = a.map((e) => e.trim()).where((e) => e.isNotEmpty).toSet();
-    final bb = b.map((e) => e.trim()).where((e) => e.isNotEmpty).toSet();
-    return aa.length == bb.length && aa.containsAll(bb);
-  }
-
-  Future<ActiveTableDetails?> _findReusableActiveTable({
-    required String gameKey,
-    required List<String> activeUserIds,
-  }) async {
-    final summaries = await _activeTablesRepo.fetchActiveTableSummaries(
-      ownerUserId: widget.currentUserId,
-    );
-
-    for (final summary in summaries) {
-      final details =
-          await _activeTablesRepo.fetchActiveTableDetails(summary.id);
-      if (details == null || details.status != 'active') continue;
-      if (details.gameKey != gameKey) continue;
-      if (details.playingFormat != widget.playingFormat) continue;
-      if (!_sameUserSet(details.playerUserIds, activeUserIds)) continue;
-      return details;
-    }
-
-    return null;
-  }
-
-  Widget? _buildPageForActiveTable(
-    ActiveTableDetails details, {
-    String? initialSavedSessionId,
-  }) {
-    final ids = List<String>.from(details.playerUserIds);
-    final isMulti = details.playingFormat == 'multi';
-    final restoredSessionId = initialSavedSessionId ?? details.savedSessionId;
-
-    switch (details.gameKey) {
-      case '13_card_poker':
-        return ThirteenCardPokerScreen(
-          gameType: '13 МОДНЫ ПОКЕР',
-          selectedUserIds: ids,
-          currentRegistrarUserId: widget.currentUserId,
-          canManageGames: widget.canManageGames,
-          initialSavedSessionId: restoredSessionId,
-          autoReturnOnWinner: isMulti,
-          multiWinsByUserId: isMulti ? Map<String, int>.from(_multiWins) : null,
-          multiCurrentTypeNumber: isMulti ? _multiCurrentTypeNumber : null,
-          multiTotalTypeCount: isMulti ? _multiTotalTypeCount : null,
-          promptInitialPlayerOrder: false,
-        );
-      case 'card_texas':
-        return CardTexasPage(
-          selectedUserIds: ids,
-          currentUserId: widget.currentUserId,
-          canManageGames: widget.canManageGames,
-          initialSavedSessionId: restoredSessionId,
-          autoReturnOnWinner: isMulti,
-          multiWinsByUserId: isMulti ? Map<String, int>.from(_multiWins) : null,
-        );
-      case 'muushig':
-        return MuushigPage(
-          selectedUserIds: ids,
-          currentUserId: widget.currentUserId,
-          canManageGames: widget.canManageGames,
-          initialSavedSessionId: restoredSessionId,
-          autoReturnOnWinner: isMulti,
-          multiWinsByUserId: isMulti ? Map<String, int>.from(_multiWins) : null,
-          multiCurrentTypeNumber: isMulti ? _multiCurrentTypeNumber : null,
-          multiTotalTypeCount: isMulti ? _multiTotalTypeCount : null,
-        );
-      case 'buur':
-        return BuurPage(
-          selectedUserIds: ids,
-          currentUserId: widget.currentUserId,
-          canManageGames: widget.canManageGames,
-          initialSavedSessionId: restoredSessionId,
-          autoReturnOnWinner: isMulti,
-          multiWinsByUserId: isMulti ? Map<String, int>.from(_multiWins) : null,
-          multiCurrentTypeNumber: isMulti ? _multiCurrentTypeNumber : null,
-          multiTotalTypeCount: isMulti ? _multiTotalTypeCount : null,
-        );
-      case 'game108':
-        return Game108Page(
-          selectedUserIds: ids,
-          currentUserId: widget.currentUserId,
-          canManageGames: widget.canManageGames,
-          initialSavedSessionId: restoredSessionId,
-          autoReturnOnWinner: isMulti,
-          multiWinsByUserId: isMulti ? Map<String, int>.from(_multiWins) : null,
-          multiCurrentTypeNumber: isMulti ? _multiCurrentTypeNumber : null,
-          multiTotalTypeCount: isMulti ? _multiTotalTypeCount : null,
-        );
-      case 'xodrox':
-        return HodrokhPage(
-          selectedUserIds: ids,
-          currentUserId: widget.currentUserId,
-          canManageGames: widget.canManageGames,
-          initialSavedSessionId: restoredSessionId,
-          autoReturnOnWinner: isMulti,
-          multiWinsByUserId: isMulti ? Map<String, int>.from(_multiWins) : null,
-        );
-      case 'nvx_shaxax':
-        return NyxShaxaxPage(
-          selectedUserIds: ids,
-          currentUserId: widget.currentUserId,
-          canManageGames: widget.canManageGames,
-          initialSavedSessionId: restoredSessionId,
-          autoReturnOnWinner: isMulti,
-          multiWinsByUserId: isMulti ? Map<String, int>.from(_multiWins) : null,
-        );
-      case 'durak':
-        return DurakPage(
-          selectedUserIds: ids,
-          playingFormat: details.playingFormat,
-          currentUserId: widget.currentUserId,
-          canManageGames: widget.canManageGames,
-          initialSavedSessionId: restoredSessionId,
-          multiWinsByUserId: isMulti ? Map<String, int>.from(_multiWins) : null,
-        );
-      case 'game501':
-        return Game501Page(
-          selectedUserIds: ids,
-          currentUserId: widget.currentUserId,
-          canManageGames: widget.canManageGames,
-          initialSavedSessionId: restoredSessionId,
-          autoReturnOnWinner: isMulti,
-          multiWinsByUserId: isMulti ? Map<String, int>.from(_multiWins) : null,
-        );
-      case 'canasta':
-        return CanastaPage(
-          selectedUserIds: ids,
-          playingFormat: details.playingFormat,
-          currentUserId: widget.currentUserId,
-          canManageGames: widget.canManageGames,
-          initialSavedSessionId: restoredSessionId,
-        );
-      case 'cai_xuraax':
-        return const CaiXuraaxPage();
-      case 'other_game':
-        return const OtherGamePage();
-      default:
-        return null;
-    }
   }
 
   Future<void> _tryRestoreMultiSession() async {
@@ -856,7 +722,7 @@ class _KindsOfGamePageState extends State<KindsOfGamePage> {
         builder: (_) => PlayerSelectionPage(
           isAddingMode: true,
           excludedUserIds: List<String>.from(widget.selectedUserIds),
-          currentUserId: widget.currentUserId,
+          currentUserId: _effectiveUserId,
           canManageGames: widget.canManageGames,
         ),
       ),
@@ -876,7 +742,7 @@ class _KindsOfGamePageState extends State<KindsOfGamePage> {
         builder: (_) => KindsOfGamePage(
           selectedUserIds: nextUserIds,
           playingFormat: widget.playingFormat,
-          currentUserId: widget.currentUserId,
+          currentUserId: _effectiveUserId,
           canManageGames: widget.canManageGames,
         ),
       ),
@@ -953,7 +819,7 @@ class _KindsOfGamePageState extends State<KindsOfGamePage> {
         builder: (_) => KindsOfGamePage(
           selectedUserIds: nextUserIds,
           playingFormat: widget.playingFormat,
-          currentUserId: widget.currentUserId,
+          currentUserId: _effectiveUserId,
           canManageGames: widget.canManageGames,
         ),
       ),
@@ -1008,7 +874,7 @@ class _KindsOfGamePageState extends State<KindsOfGamePage> {
     final photoUrl = uid == null ? '' : (_playerPhotoUrls[uid] ?? '');
     return CircleAvatar(
       radius: radius,
-      backgroundColor: Colors.deepPurple.withOpacity(0.12),
+      backgroundColor: Colors.deepPurple.withValues(alpha: 0.12),
       backgroundImage: photoUrl.isNotEmpty ? NetworkImage(photoUrl) : null,
       child: photoUrl.isEmpty
           ? Text(
@@ -1024,10 +890,11 @@ class _KindsOfGamePageState extends State<KindsOfGamePage> {
   }
 
   bool _showsInclusionButtonOnCard(int index) {
+    final playerCount = widget.selectedUserIds.length;
     return widget.playingFormat == 'multi' &&
-        widget.selectedUserIds.length >= 3 &&
         !_isThreePlayerTieBreaker &&
-        (index == _index501 || index == _indexCanasta);
+        ((index == _index501 && (playerCount >= 3 && playerCount <= 7)) ||
+            (index == _indexCanasta && (playerCount == 4 || playerCount == 6)));
   }
 
   bool _isCardIncludedForMulti(int index) {
@@ -1145,8 +1012,11 @@ class _KindsOfGamePageState extends State<KindsOfGamePage> {
               itemBuilder: (context, index) {
                 final hasImage = _gameImages[index].isNotEmpty;
                 final isCompleted = _completedGameIndexes.contains(index);
-                final bool isIncompatible = widget.playingFormat == 'multi' &&
-                    !_isCompatibleForMulti(index);
+                final isPlayerCountIncompatible = !_isPlayerCountAllowed(
+                    index, widget.selectedUserIds.length);
+                final bool isIncompatible = isPlayerCountIncompatible ||
+                    (widget.playingFormat == 'multi' &&
+                        !_isCompatibleForMulti(index));
                 final canReplayCompleted =
                     widget.playingFormat == 'multi' && _isThreePlayerTieBreaker;
 
@@ -1207,9 +1077,9 @@ class _KindsOfGamePageState extends State<KindsOfGamePage> {
                                                   end: Alignment.bottomCenter,
                                                   colors: [
                                                     Colors.black
-                                                        .withOpacity(0.3),
+                                                        .withValues(alpha: 0.3),
                                                     Colors.black
-                                                        .withOpacity(0.7),
+                                                        .withValues(alpha: 0.7),
                                                   ],
                                                 ),
                                               ),
@@ -1243,8 +1113,10 @@ class _KindsOfGamePageState extends State<KindsOfGamePage> {
                                             begin: Alignment.topCenter,
                                             end: Alignment.bottomCenter,
                                             colors: [
-                                              Colors.black.withOpacity(0.3),
-                                              Colors.black.withOpacity(0.7),
+                                              Colors.black
+                                                  .withValues(alpha: 0.3),
+                                              Colors.black
+                                                  .withValues(alpha: 0.7),
                                             ],
                                           ),
                                         ),
@@ -1269,7 +1141,8 @@ class _KindsOfGamePageState extends State<KindsOfGamePage> {
                                 Positioned.fill(
                                   child: Container(
                                     decoration: BoxDecoration(
-                                      color: Colors.black.withOpacity(0.32),
+                                      color:
+                                          Colors.black.withValues(alpha: 0.32),
                                       borderRadius: BorderRadius.circular(12),
                                     ),
                                     child: const Center(
@@ -1288,7 +1161,8 @@ class _KindsOfGamePageState extends State<KindsOfGamePage> {
                                   left: 6,
                                   child: Container(
                                     decoration: BoxDecoration(
-                                      color: Colors.black.withOpacity(0.6),
+                                      color:
+                                          Colors.black.withValues(alpha: 0.6),
                                       borderRadius: BorderRadius.circular(8),
                                     ),
                                     padding: const EdgeInsets.symmetric(
@@ -1297,7 +1171,7 @@ class _KindsOfGamePageState extends State<KindsOfGamePage> {
                                       _showsInclusionButtonOnCard(index) &&
                                               !_isCardIncludedForMulti(index)
                                           ? 'Оруулаагүй'
-                                          : '${_gameMinPlayers[index]}+',
+                                          : _playerCountRequirementLabel(index),
                                       style: const TextStyle(
                                           color: Colors.white70, fontSize: 12),
                                     ),
@@ -1392,13 +1266,13 @@ class _KindsOfGamePageState extends State<KindsOfGamePage> {
                           begin: Alignment.topCenter,
                           end: Alignment.bottomCenter,
                           colors: [
-                            Colors.black.withOpacity(
-                              photoUrl.isNotEmpty ? 0.08 : 0.18,
+                            Colors.black.withValues(
+                              alpha: photoUrl.isNotEmpty ? 0.08 : 0.18,
                             ),
-                            Colors.black.withOpacity(
-                              photoUrl.isNotEmpty ? 0.20 : 0.30,
+                            Colors.black.withValues(
+                              alpha: photoUrl.isNotEmpty ? 0.20 : 0.30,
                             ),
-                            Colors.black.withOpacity(0.72),
+                            Colors.black.withValues(alpha: 0.72),
                           ],
                           stops: const [0.0, 0.52, 1.0],
                         ),
@@ -1518,11 +1392,11 @@ class _KindsOfGamePageState extends State<KindsOfGamePage> {
         children: [
           headerRow,
           if (_isThreePlayerTieBreaker &&
-              _threePlayerTieBreakerUserIds.length == 2)
+              _threePlayerTieBreakerUserIds.length >= 2)
             Padding(
               padding: const EdgeInsets.only(top: 8),
               child: Text(
-                'Tie-break: ${_playerDisplayNames[_threePlayerTieBreakerUserIds[0]] ?? _threePlayerTieBreakerUserIds[0]} vs ${_playerDisplayNames[_threePlayerTieBreakerUserIds[1]] ?? _threePlayerTieBreakerUserIds[1]}',
+                'Хайн хагалах: ${_threePlayerTieBreakerUserIds.map((userId) => _playerDisplayNames[userId] ?? userId).join(', ')}',
                 style: const TextStyle(
                   color: Colors.amberAccent,
                   fontWeight: FontWeight.w600,
@@ -1536,6 +1410,16 @@ class _KindsOfGamePageState extends State<KindsOfGamePage> {
   }
 
   Future<void> _navigateToGame(BuildContext context, int index) async {
+    if (!_isPlayerCountAllowed(index, widget.selectedUserIds.length)) {
+      ScaffoldMessenger.of(context).showSnackBar(
+        SnackBar(
+          content: Text(
+            '${_gameNameForIndex(index)} тоглоомд ${_playerCountRequirementLabel(index)} шаардлагатай.',
+          ),
+        ),
+      );
+      return;
+    }
     final canReplayCompleted =
         widget.playingFormat == 'multi' && _isThreePlayerTieBreaker;
     if (widget.playingFormat == 'multi' &&
@@ -1565,9 +1449,9 @@ class _KindsOfGamePageState extends State<KindsOfGamePage> {
             : ThirteenCardPokerScreen(
                 gameType: '13 МОДНЫ ПОКЕР',
                 selectedUserIds: activeUserIds,
-                currentRegistrarUserId: widget.currentUserId,
+                currentRegistrarUserId: _effectiveUserId,
                 canManageGames: widget.canManageGames,
-                autoReturnOnWinner: widget.playingFormat == 'multi',
+                autoReturnOnWinner: widget.playingFormat != 'single',
                 multiWinsByUserId: widget.playingFormat == 'multi'
                     ? Map<String, int>.from(_multiWins)
                     : null,
@@ -1582,9 +1466,9 @@ class _KindsOfGamePageState extends State<KindsOfGamePage> {
       case 1:
         page = CardTexasPage(
           selectedUserIds: List<String>.from(activeUserIds),
-          currentUserId: widget.currentUserId,
+          currentUserId: _effectiveUserId,
           canManageGames: widget.canManageGames,
-          autoReturnOnWinner: widget.playingFormat == 'multi',
+          autoReturnOnWinner: widget.playingFormat != 'single',
           multiWinsByUserId: widget.playingFormat == 'multi'
               ? Map<String, int>.from(_multiWins)
               : null,
@@ -1599,9 +1483,9 @@ class _KindsOfGamePageState extends State<KindsOfGamePage> {
         }
         page = MuushigPage(
           selectedUserIds: List<String>.from(activeUserIds),
-          currentUserId: widget.currentUserId,
+          currentUserId: _effectiveUserId,
           canManageGames: widget.canManageGames,
-          autoReturnOnWinner: widget.playingFormat == 'multi',
+          autoReturnOnWinner: widget.playingFormat != 'single',
           multiWinsByUserId: widget.playingFormat == 'multi'
               ? Map<String, int>.from(_multiWins)
               : null,
@@ -1614,9 +1498,9 @@ class _KindsOfGamePageState extends State<KindsOfGamePage> {
       case 3:
         page = BuurPage(
           selectedUserIds: List<String>.from(activeUserIds),
-          currentUserId: widget.currentUserId,
+          currentUserId: _effectiveUserId,
           canManageGames: widget.canManageGames,
-          autoReturnOnWinner: widget.playingFormat == 'multi',
+          autoReturnOnWinner: widget.playingFormat != 'single',
           multiWinsByUserId: widget.playingFormat == 'multi'
               ? Map<String, int>.from(_multiWins)
               : null,
@@ -1635,9 +1519,9 @@ class _KindsOfGamePageState extends State<KindsOfGamePage> {
         }
         page = Game108Page(
           selectedUserIds: List<String>.from(activeUserIds),
-          currentUserId: widget.currentUserId,
+          currentUserId: _effectiveUserId,
           canManageGames: widget.canManageGames,
-          autoReturnOnWinner: widget.playingFormat == 'multi',
+          autoReturnOnWinner: widget.playingFormat != 'single',
           multiWinsByUserId: widget.playingFormat == 'multi'
               ? Map<String, int>.from(_multiWins)
               : null,
@@ -1650,9 +1534,9 @@ class _KindsOfGamePageState extends State<KindsOfGamePage> {
       case 5:
         page = HodrokhPage(
           selectedUserIds: List<String>.from(activeUserIds),
-          currentUserId: widget.currentUserId,
+          currentUserId: _effectiveUserId,
           canManageGames: widget.canManageGames,
-          autoReturnOnWinner: widget.playingFormat == 'multi',
+          autoReturnOnWinner: widget.playingFormat != 'single',
           multiWinsByUserId: widget.playingFormat == 'multi'
               ? Map<String, int>.from(_multiWins)
               : null,
@@ -1661,9 +1545,9 @@ class _KindsOfGamePageState extends State<KindsOfGamePage> {
       case 6:
         page = NyxShaxaxPage(
           selectedUserIds: List<String>.from(activeUserIds),
-          currentUserId: widget.currentUserId,
+          currentUserId: _effectiveUserId,
           canManageGames: widget.canManageGames,
-          autoReturnOnWinner: widget.playingFormat == 'multi',
+          autoReturnOnWinner: widget.playingFormat != 'single',
           multiWinsByUserId: widget.playingFormat == 'multi'
               ? Map<String, int>.from(_multiWins)
               : null,
@@ -1673,7 +1557,7 @@ class _KindsOfGamePageState extends State<KindsOfGamePage> {
         page = DurakPage(
           selectedUserIds: List<String>.from(activeUserIds),
           playingFormat: widget.playingFormat,
-          currentUserId: widget.currentUserId,
+          currentUserId: _effectiveUserId,
           canManageGames: widget.canManageGames,
           multiWinsByUserId: widget.playingFormat == 'multi'
               ? Map<String, int>.from(_multiWins)
@@ -1683,9 +1567,9 @@ class _KindsOfGamePageState extends State<KindsOfGamePage> {
       case 8:
         page = Game501Page(
           selectedUserIds: List<String>.from(activeUserIds),
-          currentUserId: widget.currentUserId,
+          currentUserId: _effectiveUserId,
           canManageGames: widget.canManageGames,
-          autoReturnOnWinner: widget.playingFormat == 'multi',
+          autoReturnOnWinner: widget.playingFormat != 'single',
           multiWinsByUserId: widget.playingFormat == 'multi'
               ? Map<String, int>.from(_multiWins)
               : null,
@@ -1695,7 +1579,7 @@ class _KindsOfGamePageState extends State<KindsOfGamePage> {
         page = CanastaPage(
           selectedUserIds: List<String>.from(activeUserIds),
           playingFormat: widget.playingFormat,
-          currentUserId: widget.currentUserId,
+          currentUserId: _effectiveUserId,
           canManageGames: widget.canManageGames,
         );
         break;
@@ -1717,10 +1601,11 @@ class _KindsOfGamePageState extends State<KindsOfGamePage> {
       if (!mounted) return;
 
       if (widget.playingFormat == 'multi') {
-        final winnerId =
-            await _extractWinnerUserId(index, result, activeUserIds);
-        if (winnerId != null) {
+        final winnerIds =
+            await _extractWinnerUserIds(index, result, activeUserIds);
+        if (winnerIds.isNotEmpty) {
           if (_isThreePlayerTieBreaker) {
+            final winnerId = winnerIds.first;
             setState(() {
               _multiWins[winnerId] = (_multiWins[winnerId] ?? 0) + 1;
               _multiWinGameIndices
@@ -1735,14 +1620,16 @@ class _KindsOfGamePageState extends State<KindsOfGamePage> {
           }
 
           setState(() {
-            _multiWins[winnerId] = (_multiWins[winnerId] ?? 0) + 1;
-            _multiWinGameIndices
-                .putIfAbsent(winnerId, () => <int>[])
-                .add(index);
+            for (final winnerId in winnerIds) {
+              _multiWins[winnerId] = (_multiWins[winnerId] ?? 0) + 1;
+              _multiWinGameIndices
+                  .putIfAbsent(winnerId, () => <int>[])
+                  .add(index);
+            }
             _completedGameIndexes.add(index);
           });
 
-          if (_hasTwoPlayerEarlyChampion || _hasThreePlayerEarlyChampion) {
+          if (_hasUncatchableMultiLeader) {
             await _showMultiFormatFinalResult();
             return;
           }
@@ -1770,7 +1657,7 @@ class _KindsOfGamePageState extends State<KindsOfGamePage> {
         page = ThirteenCardPokerScreen(
           gameType: '13 МОДНЫ ПОКЕР',
           selectedUserIds: List<String>.from(saved.selectedUserIds),
-          currentRegistrarUserId: widget.currentUserId,
+          currentRegistrarUserId: _effectiveUserId,
           canManageGames: widget.canManageGames,
           initialSavedSessionId: saved.id,
         );
@@ -1779,7 +1666,7 @@ class _KindsOfGamePageState extends State<KindsOfGamePage> {
         page = CanastaPage(
           selectedUserIds: List<String>.from(saved.selectedUserIds),
           playingFormat: widget.playingFormat,
-          currentUserId: widget.currentUserId,
+          currentUserId: _effectiveUserId,
           canManageGames: widget.canManageGames,
           initialSavedSessionId: saved.id,
         );
@@ -1788,7 +1675,7 @@ class _KindsOfGamePageState extends State<KindsOfGamePage> {
         page = DurakPage(
           selectedUserIds: List<String>.from(saved.selectedUserIds),
           playingFormat: widget.playingFormat,
-          currentUserId: widget.currentUserId,
+          currentUserId: _effectiveUserId,
           canManageGames: widget.canManageGames,
           initialSavedSessionId: saved.id,
         );
@@ -1796,7 +1683,7 @@ class _KindsOfGamePageState extends State<KindsOfGamePage> {
       case 'xodrox':
         page = HodrokhPage(
           selectedUserIds: List<String>.from(saved.selectedUserIds),
-          currentUserId: widget.currentUserId,
+          currentUserId: _effectiveUserId,
           canManageGames: widget.canManageGames,
           initialSavedSessionId: saved.id,
         );
@@ -1804,7 +1691,7 @@ class _KindsOfGamePageState extends State<KindsOfGamePage> {
       case 'card_texas':
         page = CardTexasPage(
           selectedUserIds: List<String>.from(saved.selectedUserIds),
-          currentUserId: widget.currentUserId,
+          currentUserId: _effectiveUserId,
           canManageGames: widget.canManageGames,
           initialSavedSessionId: saved.id,
         );
@@ -1812,7 +1699,7 @@ class _KindsOfGamePageState extends State<KindsOfGamePage> {
       case 'nvx_shaxax':
         page = NyxShaxaxPage(
           selectedUserIds: List<String>.from(saved.selectedUserIds),
-          currentUserId: widget.currentUserId,
+          currentUserId: _effectiveUserId,
           canManageGames: widget.canManageGames,
           initialSavedSessionId: saved.id,
         );
@@ -1820,7 +1707,7 @@ class _KindsOfGamePageState extends State<KindsOfGamePage> {
       case 'buur':
         page = BuurPage(
           selectedUserIds: List<String>.from(saved.selectedUserIds),
-          currentUserId: widget.currentUserId,
+          currentUserId: _effectiveUserId,
           canManageGames: widget.canManageGames,
           initialSavedSessionId: saved.id,
         );
@@ -1828,7 +1715,7 @@ class _KindsOfGamePageState extends State<KindsOfGamePage> {
       case 'game108':
         page = Game108Page(
           selectedUserIds: List<String>.from(saved.selectedUserIds),
-          currentUserId: widget.currentUserId,
+          currentUserId: _effectiveUserId,
           canManageGames: widget.canManageGames,
           initialSavedSessionId: saved.id,
         );
@@ -1836,7 +1723,7 @@ class _KindsOfGamePageState extends State<KindsOfGamePage> {
       case 'muushig':
         page = MuushigPage(
           selectedUserIds: List<String>.from(saved.selectedUserIds),
-          currentUserId: widget.currentUserId,
+          currentUserId: _effectiveUserId,
           canManageGames: widget.canManageGames,
           initialSavedSessionId: saved.id,
         );
@@ -1844,7 +1731,7 @@ class _KindsOfGamePageState extends State<KindsOfGamePage> {
       case 'game501':
         page = Game501Page(
           selectedUserIds: List<String>.from(saved.selectedUserIds),
-          currentUserId: widget.currentUserId,
+          currentUserId: _effectiveUserId,
           canManageGames: widget.canManageGames,
           initialSavedSessionId: saved.id,
         );
@@ -1853,7 +1740,7 @@ class _KindsOfGamePageState extends State<KindsOfGamePage> {
         page = KindsOfGamePage(
           selectedUserIds: List<String>.from(saved.selectedUserIds),
           playingFormat: 'multi',
-          currentUserId: widget.currentUserId,
+          currentUserId: _effectiveUserId,
           canManageGames: widget.canManageGames,
           initialSavedSessionId: saved.id,
         );
@@ -1871,6 +1758,25 @@ class _KindsOfGamePageState extends State<KindsOfGamePage> {
       context,
       MaterialPageRoute(builder: (_) => page!),
     );
+  }
+
+  Future<List<String>> _extractWinnerUserIds(
+    int index,
+    Object? result,
+    List<String> activeUserIds,
+  ) async {
+    if (result is Map) {
+      final map = Map<String, dynamic>.from(result.cast<String, dynamic>());
+      final multiple = (map['winnerUserIds'] as List? ?? const <dynamic>[])
+          .whereType<String>()
+          .map((userId) => userId.trim())
+          .where((userId) => activeUserIds.contains(userId))
+          .toSet()
+          .toList(growable: false);
+      if (multiple.isNotEmpty) return multiple;
+    }
+    final winner = await _extractWinnerUserId(index, result, activeUserIds);
+    return winner == null ? const <String>[] : <String>[winner];
   }
 
   Future<String?> _extractWinnerUserId(
@@ -2089,8 +1995,8 @@ class _KindsOfGamePageState extends State<KindsOfGamePage> {
                                       height: 34,
                                       alignment: Alignment.center,
                                       decoration: BoxDecoration(
-                                        color:
-                                            Colors.deepPurple.withOpacity(0.08),
+                                        color: Colors.deepPurple
+                                            .withValues(alpha: 0.08),
                                         shape: BoxShape.circle,
                                       ),
                                       child: Text(

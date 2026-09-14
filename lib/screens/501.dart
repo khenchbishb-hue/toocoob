@@ -1,6 +1,14 @@
+import 'dart:async';
+import '../utils/win_voice_controller.dart';
+import '../utils/buur_voice_command.dart';
+import '../utils/voice_player_selection.dart';
+import '../utils/game501_voice.dart';
+import '../widgets/voice_player_cue.dart';
+import '../utils/player_profiles.dart';
+import 'package:toocoob/utils/live_game_state.dart';
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
-import 'package:cloud_firestore/cloud_firestore.dart';
+
 import 'package:file_selector/file_selector.dart';
 import 'package:flutter/foundation.dart';
 import 'package:pdf/widgets.dart' as pw;
@@ -37,9 +45,24 @@ class Game501Page extends StatefulWidget {
   State<Game501Page> createState() => _Game501PageState();
 }
 
-class _Game501PageState extends State<Game501Page> {
-  final SavedGameSessionsRepository _savedSessionsRepo =
-      SavedGameSessionsRepository();
+class _Game501PageState extends State<Game501Page>
+    with LiveGameState<Game501Page> {
+  @override
+  LiveGameSessionsRepository get liveRepository => _savedSessionsRepo;
+  @override
+  String? get liveRegistrar => _currentRegistrarUserId;
+  @override
+  Future<void> saveLiveProgress() => _saveProgress();
+  @override
+  Future<void> restoreLiveProgress(SavedGameSession saved) async {
+    await _tryRestoreSavedSession(remote: saved);
+    _currentRegistrarUserId =
+        saved.payload['currentRegistrarUserId'] as String? ??
+            _currentRegistrarUserId;
+  }
+
+  final LiveGameSessionsRepository _savedSessionsRepo =
+      LiveGameSessionsRepository();
   final ActiveTablesRepository _activeTablesRepo = ActiveTablesRepository();
   static const int _seatCount = 7;
   static const int _minimumActiveSeats = 3;
@@ -70,6 +93,149 @@ class _Game501PageState extends State<Game501Page> {
   final Set<int> _autoCorrectSeatIndexes = <int>{};
   int? _activeRecommendedSeatIndex;
   bool _multiAutoReturnTriggered = false;
+  late final WinVoiceController _voice;
+  int? _voiceSeat;
+  String _voiceField = 'player';
+  bool _manualEntry = false;
+  final Map<int, int> _roundBefore = {};
+  final Set<int> _roundSubmitted = {};
+  final List<String> _originalOrder = [];
+  String _seatKey(_PlayerSeat seat) => seat.userId ?? 'seat_${seat.index}';
+
+  void _rotate501Seats() {
+    final waiting = _activeSeatCount - _playingCount;
+    if (waiting <= 0) return;
+    final ranked = rank501Round([
+      for (var i = 0; i < _playingCount; i++) (
+        points: (int.tryParse(_scoreInputControllers[i].text) ?? 0) +
+          _selectedScoreButtons[i].fold<int>(0, (n, t) => n + _scoreButtonValueByType[t]!),
+        suitQuality: _selectedScoreButtons[i].fold<int>(0, (n, t) =>
+          _scoreButtonValueByType[t]! > n ? _scoreButtonValueByType[t]! : n),
+        originalOrder: _originalOrder.contains(_seatKey(_seats[i]))
+          ? _originalOrder.indexOf(_seatKey(_seats[i])) : i,
+      ),
+    ]);
+    for (var i = 0; i < waiting; i++) {
+      _swapSeatSlots(ranked[i], _playingCount + i);
+    }
+  }
+  int? _receiptSeat;
+  _ScoreButtonType? _receiptSuit;
+  int _receiptValue = 0;
+  Timer? _receiptTimer;
+  int get _playingCount => _activeSeatCount > 4 ? 4 : _activeSeatCount;
+  @override
+  Widget? get liveCommandIndicator => _voice.indicator;
+  @override
+  Widget? get liveCommandHint => _voice.stopHint;
+
+  void _manual() {
+    _manualEntry = true;
+    _voiceSeat = null;
+    _voice.manual();
+  }
+
+  String _waiting() {
+    if (_voiceSeat == null) return 'Тоглогчийн нэр, хочийг хэлнэ үү';
+    final field = switch (_voiceField) {
+      'taken' => 'авсан үнэ (121 буюу түүнээс их)',
+      'play' => 'тоглох үнэ',
+      'suits' => 'хагарааны өнгө, эсвэл “Оноо”',
+      'score' => 'цуглуулсан оноо (0–121)',
+      _ => '“Авлаа” эсвэл “Үр дүн”',
+    };
+    return '${_seats[_voiceSeat!].displayName}: $field';
+  }
+
+  String _handleVoice(String text) {
+    final names = _seats
+        .take(_playingCount)
+        .map((s) => [s.displayName, s.username].expand(buurNameAliases))
+        .toList();
+    final mention = lastVoicePlayerMention(text, names);
+    if (mention != null) {
+      if (mention.playerIndex == null)
+        return 'Нэр давхцаж байна. Хочоор хэлнэ үү';
+      _manualEntry = false;
+      _voiceSeat = mention.playerIndex;
+      _voice.hint = false;
+      _voiceField = _activeRecommendedSeatIndex == null ? 'player' : 'suits';
+      if (_autoCorrectSeatIndexes.contains(_voiceSeat)) _voiceField = 'score';
+      text = text.substring(mention.end).trim();
+    }
+    if (_manualEntry)
+      return 'Гараар оруулж байна. Дуугаар үргэлжлүүлэх бол нэрээ хэлнэ үү';
+    final i = _voiceSeat;
+    if (i == null) return _waiting();
+    if (text.isEmpty) {
+      setState(() {});
+      return _waiting();
+    }
+    if (const {'авлаа', 'авсан үнэ', 'авах үнэ'}.contains(text)) {
+      if (_roundSubmitted.isNotEmpty && _activeRecommendedSeatIndex != i)
+        return 'Энэ үеийн авсан тоглогчийг солих боломжгүй';
+      _activateRecommendedSeat(i);
+      if (_activeRecommendedSeatIndex != i)
+        return 'Одоо энэ тоглогч авах боломжгүй';
+      _voiceField = _autoCorrectSeatIndexes.contains(i) ? 'score' : 'taken';
+    } else if (text == 'тоглох үнэ') {
+      if (_activeRecommendedSeatIndex != i)
+        return 'Эхлээд “Авлаа” гэж хэлнэ үү';
+      _voiceField = 'play';
+    } else if (const {'үр дүн', 'дүн', 'нийт'}.contains(text)) {
+      if (_activeRecommendedSeatIndex == null)
+        return 'Эхлээд авсан тоглогч, үнийг оруулна уу';
+      _voiceField = _autoCorrectSeatIndexes.contains(i) ? 'score' : 'suits';
+    } else if (text == 'оноо') {
+      _voiceField = 'score';
+    } else if (const {'бууж өгье', 'бууж өглөө', 'бууж өгсөн'}.contains(text)) {
+      if (i != _activeRecommendedSeatIndex ||
+          _roundSubmitted.isNotEmpty ||
+          !_validPrices(i)) return 'Бууж өгөх боломжгүй. Үнээ шалгана уу';
+      _cancelRecommendedSeat(i);
+      return 'Бууж өглөө. Дараагийн тоглогчийн нэрийг хэлнэ үү';
+    } else if (_voiceField == 'suits') {
+      final commands = parse501Suits(text);
+      if (commands.isEmpty) return 'Өнгө танигдсангүй. ${_waiting()}';
+      for (final command in commands) {
+        if (_lockedScoreButtonsForSeat(i)
+            .contains(_ScoreButtonType.values[command.suit]))
+          return 'Энэ хагараа өөр тоглогчид бүртгэгдсэн';
+      }
+      for (final command in commands) {
+        final type = _ScoreButtonType.values[command.suit];
+        if (_selectedScoreButtons[i].contains(type) != !command.remove)
+          _toggleScoreButton(i, type);
+      }
+    } else {
+      final number = parse501Number(text);
+      if (number == null) return 'Танигдсангүй. ${_waiting()}';
+      if (_voiceField == 'taken') {
+        if (number < 121) return 'Авсан үнэ 121 буюу түүнээс их байна';
+        _takenPriceControllers[i].text = '$number';
+        _voiceField = 'play';
+      } else if (_voiceField == 'play') {
+        final taken = int.tryParse(_takenPriceControllers[i].text) ?? 0;
+        if (taken < 121 || number < taken)
+          return 'Тоглох үнэ авсан үнээс бага байж болохгүй';
+        _playPriceControllers[i].text = '$number';
+        _voiceField = 'player';
+      } else if (_voiceField == 'score') {
+        if (!_recordScore(i, number))
+          return 'Оноо бүртгэгдсэнгүй. Үнэ болон 0–121 оноогоо шалгана уу';
+      } else {
+        return _waiting();
+      }
+    }
+    setState(() {});
+    return '✓ $text • ${_waiting()}';
+  }
+
+  bool _validPrices(int i) {
+    final taken = int.tryParse(_takenPriceControllers[i].text) ?? 0;
+    final play = int.tryParse(_playPriceControllers[i].text) ?? 0;
+    return taken >= 121 && play >= taken;
+  }
 
   bool get _canTransferRegistrar =>
       widget.canManageGames &&
@@ -121,14 +287,33 @@ class _Game501PageState extends State<Game501Page> {
       _seatCount,
       (index) => _PlayerSeat.empty(index + 1),
     );
-    _tryRestoreSavedSession();
-    if (widget.selectedUserIds.isNotEmpty) {
-      _loadSelectedUserProfiles();
-    }
+    _voice = WinVoiceController(
+      names: () => [],
+      canEdit: () =>
+          mounted &&
+          liveCanEdit &&
+          (ModalRoute.of(context)?.isCurrent ?? false),
+      apply: (_, __) => false,
+      onCommand: _handleVoice,
+    )..addListener(() {
+        if (mounted) setState(() {});
+      });
+    initializeLiveGame(() async {
+      if (widget.selectedUserIds.isNotEmpty) {
+        await _loadSelectedUserProfiles();
+      }
+      if (mounted) await _tryRestoreSavedSession();
+      if (mounted && widget.selectedUserIds.isNotEmpty) {
+        await _showAndApplyPlayerOrderDialog();
+      }
+    });
   }
 
   @override
   void dispose() {
+    _receiptTimer?.cancel();
+    _voice.dispose();
+    stopLiveGame();
     for (final controller in _takenPriceControllers) {
       controller.dispose();
     }
@@ -170,11 +355,7 @@ class _Game501PageState extends State<Game501Page> {
       if (userId.isEmpty) continue;
 
       try {
-        final snapshot = await FirebaseFirestore.instance
-            .collection('users')
-            .doc(userId)
-            .get();
-        final data = snapshot.data();
+        final data = await loadPlayerProfile(userId);
         if (data == null) continue;
 
         final username = (data['username'] ?? '').toString().trim();
@@ -224,17 +405,16 @@ class _Game501PageState extends State<Game501Page> {
   }
 
   Set<_ScoreButtonType> _lockedScoreButtonsForSeat(int seatIndex) {
-    final activeSeatIndex = _activeRecommendedSeatIndex;
-    if (activeSeatIndex == null) return const <_ScoreButtonType>{};
-    if (activeSeatIndex < 0 || activeSeatIndex >= _activeSeatCount) {
-      return const <_ScoreButtonType>{};
-    }
-    if (seatIndex == activeSeatIndex) return const <_ScoreButtonType>{};
-    return Set<_ScoreButtonType>.from(_selectedScoreButtons[activeSeatIndex]);
+    return {
+      for (var i = 0; i < _playingCount; i++)
+        if (i != seatIndex) ..._selectedScoreButtons[i]
+    };
   }
 
   void _activateRecommendedSeat(int seatIndex) {
     if (seatIndex >= _activeSeatCount) return;
+    if (_seats[seatIndex].currentScore >= 1000) return;
+    if (_roundSubmitted.isNotEmpty) return;
     if (_autoCorrectSeatIndexes.contains(seatIndex)) return;
     if (_activeRecommendedSeatIndex == seatIndex) return;
 
@@ -250,7 +430,9 @@ class _Game501PageState extends State<Game501Page> {
   }
 
   void _cancelRecommendedSeat(int seatIndex) {
-    if (_activeRecommendedSeatIndex != seatIndex) return;
+    if (_activeRecommendedSeatIndex != seatIndex || _roundSubmitted.isNotEmpty)
+      return;
+    if (!_validPrices(seatIndex)) return;
 
     final playPrice =
         int.tryParse(_playPriceControllers[seatIndex].text.trim()) ?? 0;
@@ -262,7 +444,7 @@ class _Game501PageState extends State<Game501Page> {
           currentScore: current.currentScore + playPrice,
         );
 
-        final otherIndexes = List<int>.generate(_activeSeatCount, (i) => i)
+        final otherIndexes = List<int>.generate(_playingCount, (i) => i)
             .where((i) => i != seatIndex)
             .toList(growable: false);
         final othersCount = otherIndexes.length;
@@ -281,8 +463,11 @@ class _Game501PageState extends State<Game501Page> {
           }
         }
 
-        _activeRecommendedSeatIndex = null;
-        _applyAutoCorrectModeInState();
+        for (var i = 0; i < _playingCount; i++) {
+          _selectedScoreButtons[i].clear();
+          _scoreInputControllers[i].text = '${i == seatIndex ? 0 : deduction}';
+        }
+        _finish501Round();
       });
       return;
     }
@@ -296,6 +481,18 @@ class _Game501PageState extends State<Game501Page> {
     if (seatIndex >= _activeSeatCount) return;
     if (_autoCorrectSeatIndexes.contains(seatIndex)) return;
     if (_lockedScoreButtonsForSeat(seatIndex).contains(type)) return;
+
+    final removing = _selectedScoreButtons[seatIndex].contains(type);
+    _receiptTimer?.cancel();
+    _receiptSeat = seatIndex;
+    _receiptSuit = type;
+    _receiptValue = _scoreButtonValueByType[type]! * (removing ? -1 : 1);
+    _receiptTimer = Timer(const Duration(milliseconds: 1200), () {
+      if (mounted)
+        setState(() {
+          _receiptSeat = null;
+        });
+    });
 
     setState(() {
       final selected = _selectedScoreButtons[seatIndex];
@@ -340,20 +537,13 @@ class _Game501PageState extends State<Game501Page> {
     );
   }
 
-  void _focusNextSeatButtons(int currentSeatIndex) {
-    if (_activeSeatCount <= 0) return;
-
-    for (int step = 1; step <= _activeSeatCount; step++) {
-      final index = (currentSeatIndex + step) % _activeSeatCount;
-      if (_autoCorrectSeatIndexes.contains(index)) continue;
-      if (_seats[index].currentScore >= 1000) continue;
-      _focusScoreButton(index, 0);
-      return;
-    }
-  }
-
   void _onTakenPriceSubmitted(int seatIndex, String _) {
     if (seatIndex >= _activeSeatCount) return;
+    if ((int.tryParse(_takenPriceControllers[seatIndex].text) ?? 0) < 121) {
+      _requestFocusAndSelect(
+          _takenPriceFocusNodes[seatIndex], _takenPriceControllers[seatIndex]);
+      return;
+    }
     _requestFocusAndSelect(
       _playPriceFocusNodes[seatIndex],
       _playPriceControllers[seatIndex],
@@ -362,164 +552,118 @@ class _Game501PageState extends State<Game501Page> {
 
   void _onPlayPriceSubmitted(int seatIndex, String _) {
     if (seatIndex >= _activeSeatCount) return;
+    if (!_validPrices(seatIndex)) {
+      _requestFocusAndSelect(
+          _playPriceFocusNodes[seatIndex], _playPriceControllers[seatIndex]);
+      return;
+    }
     _focusScoreButton(seatIndex, 0);
   }
 
   void _onScoreSubmitted(int seatIndex, String value) {
-    if (seatIndex >= _activeSeatCount) return;
-
-    final scoreInput = int.tryParse(value.trim()) ?? 0;
-
-    final isAutoCorrectSeat = _autoCorrectSeatIndexes.contains(seatIndex);
-    final playPrice =
-        int.tryParse(_playPriceControllers[seatIndex].text.trim());
-
-    if (!isAutoCorrectSeat && (playPrice == null || playPrice <= 0)) {
+    _manualEntry = false;
+    final number = int.tryParse(value.trim());
+    if (number == null || !_recordScore(seatIndex, number)) {
       _requestFocusAndSelect(
-        _playPriceFocusNodes[seatIndex],
-        _playPriceControllers[seatIndex],
-      );
-      return;
-    }
-
-    if (isAutoCorrectSeat) {
-      final currentSeat = _seats[seatIndex];
-      final nextScore = scoreInput >= 121
-          ? currentSeat.currentScore - 121
-          : currentSeat.currentScore + 121;
-      final isWinner = nextScore <= 0;
-
-      if (isWinner) {
-        setState(() {
-          _sessionFinishedGames += 1;
-          if (_isBoltMode) {
-            _sessionBoltRounds += 1;
-          } else {
-            _sessionOrdinaryRounds += 1;
-          }
-
-          _seats[seatIndex] = currentSeat.copyWith(
-            wins: currentSeat.wins + 1,
-            currentScore: _baseScore,
-            money: currentSeat.money + (widget.autoReturnOnWinner ? 0 : 121),
-          );
-
-          for (int i = 0; i < _activeSeatCount; i++) {
-            if (i == seatIndex) continue;
-            _seats[i] = _seats[i].copyWith(currentScore: _baseScore);
-          }
-
-          _clearRoundInputs();
-          _activeRecommendedSeatIndex = null;
-          _roundNumber += 1;
-          _isBoltMode = false;
-          _applyAutoCorrectModeInState();
-        });
-
-        _showSnackBar(
-            '${_seats[seatIndex].displayName} хожлоо. Шинэ тоглолт эхэллээ.');
-
-        if (widget.autoReturnOnWinner && !_multiAutoReturnTriggered) {
-          _multiAutoReturnTriggered = true;
-          final winnerUserId = _seats[seatIndex].userId;
-          WidgetsBinding.instance.addPostFrameCallback((_) {
-            if (!mounted) return;
-            Navigator.of(context).pop(<String, dynamic>{
-              'completedGame': '501',
-              if (winnerUserId != null && winnerUserId.isNotEmpty)
-                'winnerUserId': winnerUserId,
-            });
-          });
-        }
-      } else {
-        setState(() {
-          _seats[seatIndex] = currentSeat.copyWith(currentScore: nextScore);
-          _scoreInputControllers[seatIndex].clear();
-          _activeRecommendedSeatIndex = null;
-          _applyAutoCorrectModeInState();
-        });
-
-        _focusNextSeatButtons(seatIndex);
-      }
-      return;
-    }
-
-    final selectedButtons = _selectedScoreButtons[seatIndex];
-    final buttonSum = selectedButtons.fold<int>(
-      0,
-      (sum, type) => sum + _scoreButtonValueByType[type]!,
-    );
-    final multiplier = _isBoltMode ? 2 : 1;
-    final effectivePlayPrice = playPrice! * multiplier;
-    final total = scoreInput + buttonSum;
-
-    final currentSeat = _seats[seatIndex];
-    final nextScore = total >= effectivePlayPrice
-        ? currentSeat.currentScore - effectivePlayPrice
-        : currentSeat.currentScore + effectivePlayPrice;
-    final isWinner = nextScore <= 0;
-
-    if (isWinner) {
-      setState(() {
-        _sessionFinishedGames += 1;
-        if (_isBoltMode) {
-          _sessionBoltRounds += 1;
-        } else {
-          _sessionOrdinaryRounds += 1;
-        }
-
-        _seats[seatIndex] = currentSeat.copyWith(
-          wins: currentSeat.wins + 1,
-          currentScore: _baseScore,
-          money: currentSeat.money +
-              (widget.autoReturnOnWinner ? 0 : effectivePlayPrice),
-        );
-
-        for (int i = 0; i < _activeSeatCount; i++) {
-          if (i == seatIndex) continue;
-          _seats[i] = _seats[i].copyWith(currentScore: _baseScore);
-        }
-
-        _clearRoundInputs();
-        _activeRecommendedSeatIndex = null;
-        _roundNumber += 1;
-        _isBoltMode = false;
-        _applyAutoCorrectModeInState();
-      });
-
-      _showSnackBar(
-          '${_seats[seatIndex].displayName} хожлоо. Шинэ тоглолт эхэллээ.');
-
-      if (widget.autoReturnOnWinner && !_multiAutoReturnTriggered) {
-        _multiAutoReturnTriggered = true;
-        final winnerUserId = _seats[seatIndex].userId;
-        WidgetsBinding.instance.addPostFrameCallback((_) {
-          if (!mounted) return;
-          Navigator.of(context).pop(<String, dynamic>{
-            'completedGame': '501',
-            if (winnerUserId != null && winnerUserId.isNotEmpty)
-              'winnerUserId': winnerUserId,
-          });
-        });
-      }
-    } else {
-      setState(() {
-        _seats[seatIndex] = currentSeat.copyWith(
-          currentScore: nextScore < 0 ? 0 : nextScore,
-        );
-        _selectedScoreButtons[seatIndex].clear();
-        _takenPriceControllers[seatIndex].clear();
-        _playPriceControllers[seatIndex].clear();
-        _scoreInputControllers[seatIndex].clear();
-        _activeRecommendedSeatIndex = null;
-        _applyAutoCorrectModeInState();
-      });
-
-      _focusNextSeatButtons(seatIndex);
+          _scoreInputFocusNodes[seatIndex], _scoreInputControllers[seatIndex]);
     }
   }
 
+  bool _recordScore(int seatIndex, int number) {
+    if (seatIndex >= _playingCount || number < 0 || number > 121) return false;
+    final actor = _activeRecommendedSeatIndex;
+    if (actor == null) return false;
+    final isActor = actor == seatIndex;
+    final before = _roundBefore[seatIndex] ?? _seats[seatIndex].currentScore;
+    final collecting = isActor && before > 0 && before < 121;
+    if (!_roundSubmitted.contains(actor) && !isActor) return false;
+    if (isActor && !collecting && !_validPrices(seatIndex)) return false;
+    final suits = _selectedScoreButtons[seatIndex]
+        .fold<int>(0, (n, t) => n + _scoreButtonValueByType[t]!);
+    final play = int.tryParse(_playPriceControllers[seatIndex].text) ?? 121;
+    final next = score501Result(
+        before: before,
+        isTaker: isActor,
+        playPrice: play,
+        cardPoints: number,
+        suitPoints: suits,
+        bolt: _isBoltMode);
+    setState(() {
+      _roundBefore.putIfAbsent(seatIndex, () => before);
+      _roundSubmitted.add(seatIndex);
+      _scoreInputControllers[seatIndex].text = '$number';
+      _seats[seatIndex] = _seats[seatIndex].copyWith(currentScore: next);
+      if (collecting && next <= 0) {
+        _finish501Round();
+        return;
+      }
+      final pending = [
+        for (var step = 1; step <= _playingCount; step++)
+          (seatIndex + step) % _playingCount
+      ].where((i) => !_roundSubmitted.contains(i)).toList();
+      if (pending.isNotEmpty) {
+        _voiceSeat = pending.first;
+        _voiceField = 'suits';
+      } else {
+        _finish501Round();
+      }
+    });
+    return true;
+  }
+
+  void _finish501Round() {
+    final winners = [
+      for (var i = 0; i < _playingCount; i++)
+        if (_seats[i].currentScore <= 0) i
+    ];
+    if (winners.isNotEmpty) {
+      _sessionFinishedGames++;
+      if (_isBoltMode) {
+        _sessionBoltRounds++;
+      } else {
+        _sessionOrdinaryRounds++;
+      }
+      for (final i in winners) {
+        final seat = _seats[i];
+        final price = int.tryParse(_playPriceControllers[i].text) ?? 121;
+        _seats[i] = seat.copyWith(
+            wins: seat.wins + 1,
+            money: seat.money +
+                (widget.autoReturnOnWinner
+                    ? 0
+                    : price * (_isBoltMode ? 2 : 1)));
+      }
+      final winnerId = _seats[winners.first].userId;
+      for (var i = 0; i < _activeSeatCount; i++) {
+        _seats[i] = _seats[i].copyWith(currentScore: _baseScore);
+      }
+      _roundNumber++;
+      _isBoltMode = false;
+      if (widget.autoReturnOnWinner && !_multiAutoReturnTriggered) {
+        _multiAutoReturnTriggered = true;
+        WidgetsBinding.instance.addPostFrameCallback((_) {
+          if (mounted)
+            Navigator.of(context).pop(<String, dynamic>{
+              'completedGame': '501',
+              if (winnerId != null) 'winnerUserId': winnerId,
+            });
+        });
+      }
+    }
+    _rotate501Seats();
+    _clearRoundInputs();
+    _activeRecommendedSeatIndex = null;
+    _voiceSeat = null;
+    _voiceField = 'player';
+    _voice.hint = true;
+    _applyAutoCorrectModeInState();
+  }
+
   void _clearRoundInputs() {
+    _roundBefore.clear();
+    _roundSubmitted.clear();
+    _receiptTimer?.cancel();
+    _receiptSeat = null;
     for (int i = 0; i < _activeSeatCount; i++) {
       _selectedScoreButtons[i].clear();
       _takenPriceControllers[i].clear();
@@ -531,7 +675,7 @@ class _Game501PageState extends State<Game501Page> {
 
   void _applyAutoCorrectModeInState() {
     final lowScoreIndexes = <int>[];
-    for (int i = 0; i < _activeSeatCount; i++) {
+    for (int i = 0; i < _playingCount; i++) {
       final score = _seats[i].currentScore;
       if (score > 0 && score < 121) {
         lowScoreIndexes.add(i);
@@ -709,7 +853,7 @@ class _Game501PageState extends State<Game501Page> {
 
     if (!mounted || addedCount == 0) return;
 
-    if (_activeSeatCount >= 4) {
+    if (_activeSeatCount >= 3) {
       await _showAndApplyPlayerOrderDialog();
     }
   }
@@ -729,11 +873,7 @@ class _Game501PageState extends State<Game501Page> {
     );
 
     try {
-      final snapshot = await FirebaseFirestore.instance
-          .collection('users')
-          .doc(userId)
-          .get();
-      final data = snapshot.data();
+      final data = await loadPlayerProfile(userId);
       if (data == null) return seat;
 
       final username = (data['username'] ?? '').toString().trim();
@@ -779,14 +919,17 @@ class _Game501PageState extends State<Game501Page> {
       );
     }
 
-    if (candidates.length < 4) return;
+    if (candidates.length < 3) return;
 
     final orderedUserIds = await _showPlayerOrderDialog(candidates);
     if (!mounted || orderedUserIds == null || orderedUserIds.isEmpty) return;
 
     setState(() {
-      for (int target = 0; target < orderedUserIds.length; target++) {
-        final userId = orderedUserIds[target];
+      _originalOrder..clear()..addAll(orderedUserIds);
+      final waiting = orderedUserIds.length > 4 ? orderedUserIds.length - 4 : 0;
+      final seating = [...orderedUserIds.skip(waiting), ...orderedUserIds.take(waiting)];
+      for (int target = 0; target < seating.length; target++) {
+        final userId = seating[target];
         final current = _seats.indexWhere((seat) => seat.userId == userId);
         if (current < 0 || current == target) continue;
         _swapSeatSlots(target, current);
@@ -795,63 +938,69 @@ class _Game501PageState extends State<Game501Page> {
     });
   }
 
-  Future<List<String>?> _showPlayerOrderDialog(List<_SeatCandidate> players) {
-    final selectedOrder = List<int?>.filled(players.length, null);
+  Future<List<String>?> _showPlayerOrderDialog(List<_SeatCandidate> players) async {
+    final playerDisplayNames = players.map((p) => p.title).toList();
+    final playerUserNames = players.map((p) => p.subtitle).toList();
+    final playerPhotoUrls = players.map((p) => p.photoUrl).toList();
+    List<int?> selectedOrder = List.filled(playerDisplayNames.length, null);
     int currentOrder = 1;
-
     return showDialog<List<String>>(
       context: context,
-      builder: (dialogContext) {
+      builder: (context) {
         return StatefulBuilder(
-          builder: (context, setDialogState) {
+          builder: (context, setState) {
             final screenWidth = MediaQuery.of(context).size.width;
+            const cardSpacing = 6.0;
             final maxDialogWidth = screenWidth * 0.9;
-            const spacing = 6.0;
-            final cardWidth = (maxDialogWidth - spacing * (7 - 1)) / 7;
-            final dialogWidth =
-                players.length * cardWidth + (players.length - 1) * spacing;
+            final cardWidth = (maxDialogWidth - cardSpacing * (7 - 1)) / 7;
+            final dialogWidth = playerDisplayNames.length * cardWidth +
+                (playerDisplayNames.length - 1) * cardSpacing;
             return AlertDialog(
-              title: const Text('Тоглогчдын дараалал сонгох'),
+              title: const Text('Тоглогчийн дараалал сонгох'),
               content: SizedBox(
                 width: dialogWidth,
-                height: 230,
+                height: 220,
                 child: Column(
                   children: [
                     Expanded(
                       child: Row(
                         crossAxisAlignment: CrossAxisAlignment.start,
                         children: [
-                          for (int i = 0; i < players.length; i++) ...[
+                          for (int i = 0;
+                              i < playerDisplayNames.length;
+                              i++) ...[
                             SizedBox(
                               width: cardWidth,
-                              height: 170,
+                              height: 150,
                               child: GestureDetector(
                                 onTap: () {
                                   if (selectedOrder[i] == null &&
-                                      currentOrder <= players.length) {
-                                    setDialogState(() {
+                                      currentOrder <=
+                                          playerDisplayNames.length) {
+                                    setState(() {
                                       selectedOrder[i] = currentOrder;
-                                      currentOrder += 1;
+                                      currentOrder++;
                                     });
                                   } else if (selectedOrder[i] != null) {
-                                    setDialogState(() {
-                                      final removed = selectedOrder[i]!;
+                                    setState(() {
+                                      final removedOrder = selectedOrder[i]!;
                                       selectedOrder[i] = null;
                                       for (int j = 0;
                                           j < selectedOrder.length;
                                           j++) {
-                                        final value = selectedOrder[j];
-                                        if (value != null && value > removed) {
-                                          selectedOrder[j] = value - 1;
+                                        if (selectedOrder[j] != null &&
+                                            selectedOrder[j]! > removedOrder) {
+                                          selectedOrder[j] =
+                                              selectedOrder[j]! - 1;
                                         }
                                       }
-                                      currentOrder -= 1;
+                                      currentOrder--;
                                     });
                                   }
                                 },
                                 child: Container(
-                                  margin:
-                                      const EdgeInsets.symmetric(vertical: 4),
+                                  margin: const EdgeInsets.symmetric(
+                                      horizontal: 0, vertical: 4),
                                   decoration: BoxDecoration(
                                     borderRadius: BorderRadius.circular(10),
                                     border: Border.all(
@@ -867,69 +1016,92 @@ class _Game501PageState extends State<Game501Page> {
                                       children: [
                                         Positioned.fill(
                                           child: Builder(
-                                            builder: (_) {
-                                              final image =
-                                                  _resolveSeatCandidateImage(
-                                                players[i].photoUrl,
-                                              );
-                                              if (image == null) {
-                                                return Container(
-                                                  color:
-                                                      Colors.deepPurple.shade50,
-                                                  alignment: Alignment.center,
-                                                  child: Icon(
-                                                    Icons.person,
-                                                    color: Colors
-                                                        .deepPurple.shade300,
-                                                    size: 36,
-                                                  ),
+                                            builder: (context) {
+                                              final photoUrl =
+                                                  i < playerPhotoUrls.length
+                                                      ? playerPhotoUrls[i]
+                                                      : null;
+                                              if (photoUrl != null &&
+                                                  photoUrl.isNotEmpty) {
+                                                return Image.network(
+                                                  photoUrl,
+                                                  fit: BoxFit.cover,
+                                                  errorBuilder:
+                                                      (context, _, __) {
+                                                    return Image.asset(
+                                                      'assets/501.jpg',
+                                                      fit: BoxFit.cover,
+                                                    );
+                                                  },
                                                 );
                                               }
-                                              return Image(
-                                                image: image,
+                                              return Image.asset(
+                                                'assets/501.jpg',
                                                 fit: BoxFit.cover,
                                               );
                                             },
                                           ),
                                         ),
-                                        Positioned(
-                                          top: 6,
-                                          right: 6,
-                                          child: CircleAvatar(
-                                            radius: 12,
-                                            backgroundColor:
-                                                selectedOrder[i] != null
-                                                    ? Colors.blue
-                                                    : Colors.white70,
-                                            child: Text(
-                                              selectedOrder[i]?.toString() ??
-                                                  '',
-                                              style: const TextStyle(
-                                                fontSize: 12,
-                                                fontWeight: FontWeight.bold,
-                                                color: Colors.white,
+                                        Positioned.fill(
+                                          child: Container(
+                                            decoration: BoxDecoration(
+                                              gradient: LinearGradient(
+                                                begin: Alignment.topCenter,
+                                                end: Alignment.bottomCenter,
+                                                colors: [
+                                                  Colors.black
+                                                      .withValues(alpha: 0.05),
+                                                  Colors.black
+                                                      .withValues(alpha: 0.7),
+                                                ],
                                               ),
                                             ),
                                           ),
                                         ),
-                                        Positioned(
-                                          left: 0,
-                                          right: 0,
-                                          bottom: 0,
-                                          child: Container(
-                                            padding: const EdgeInsets.symmetric(
-                                                horizontal: 6, vertical: 6),
-                                            color: Colors.black54,
-                                            child: Text(
-                                              players[i].title,
-                                              maxLines: 1,
-                                              overflow: TextOverflow.ellipsis,
-                                              style: const TextStyle(
-                                                color: Colors.white,
-                                                fontWeight: FontWeight.bold,
-                                                fontSize: 12,
+                                        if (selectedOrder[i] != null)
+                                          Positioned(
+                                            top: 6,
+                                            left: 6,
+                                            child: CircleAvatar(
+                                              radius: 14,
+                                              backgroundColor: Colors.blue,
+                                              child: Text(
+                                                selectedOrder[i].toString(),
+                                                style: const TextStyle(
+                                                  color: Colors.white,
+                                                  fontWeight: FontWeight.bold,
+                                                  fontSize: 12,
+                                                ),
                                               ),
                                             ),
+                                          ),
+                                        Positioned(
+                                          left: 8,
+                                          right: 8,
+                                          bottom: 6,
+                                          child: Column(
+                                            mainAxisSize: MainAxisSize.min,
+                                            children: [
+                                              Text(
+                                                playerDisplayNames[i],
+                                                style: const TextStyle(
+                                                  color: Colors.white,
+                                                  fontWeight: FontWeight.bold,
+                                                  fontSize: 12,
+                                                ),
+                                                maxLines: 1,
+                                                overflow: TextOverflow.ellipsis,
+                                              ),
+                                              const SizedBox(height: 1),
+                                              Text(
+                                                playerUserNames[i],
+                                                style: const TextStyle(
+                                                    color: Colors.white,
+                                                    fontSize: 10),
+                                                maxLines: 1,
+                                                overflow: TextOverflow.ellipsis,
+                                              ),
+                                            ],
                                           ),
                                         ),
                                       ],
@@ -938,45 +1110,48 @@ class _Game501PageState extends State<Game501Page> {
                                 ),
                               ),
                             ),
-                            if (i != players.length - 1)
-                              const SizedBox(width: spacing),
+                            if (i != playerDisplayNames.length - 1)
+                              const SizedBox(width: cardSpacing),
                           ],
                         ],
                       ),
                     ),
-                    const SizedBox(height: 8),
-                    const Text(
-                      'Эхний 4 нь дээд блокт тоглоно, 4-с хойших нь доод блокт хүлээнэ.',
-                      style: TextStyle(fontSize: 13, color: Colors.black54),
+                    const SizedBox(height: 16),
+                    Row(
+                      mainAxisAlignment: MainAxisAlignment.end,
+                      children: [
+                        TextButton(
+                          onPressed: () {
+                            Navigator.of(context).pop();
+                          },
+                          child: const Text('Болих'),
+                        ),
+                        const SizedBox(width: 12),
+                        ElevatedButton(
+                          onPressed: selectedOrder
+                                      .where((e) => e != null)
+                                      .length ==
+                                  playerDisplayNames.length
+                              ? () {
+                                  List<int> orderedIndices =
+                                      List.filled(playerDisplayNames.length, 0);
+                                  for (int i = 0;
+                                      i < playerDisplayNames.length;
+                                      i++) {
+                                    if (selectedOrder[i] != null) {
+                                      orderedIndices[selectedOrder[i]! - 1] = i;
+                                    }
+                                  }
+                                  Navigator.of(context).pop(orderedIndices.map((i) => players[i].userId!).toList());
+                                }
+                              : null,
+                          child: const Text('Дараалал хадгалах'),
+                        ),
+                      ],
                     ),
                   ],
                 ),
               ),
-              actions: [
-                TextButton(
-                  onPressed: () => Navigator.of(dialogContext).pop(),
-                  child: const Text('Болих'),
-                ),
-                ElevatedButton(
-                  onPressed: selectedOrder.every((v) => v != null)
-                      ? () {
-                          final indexed = List<int>.generate(
-                            players.length,
-                            (i) => i,
-                          )..sort(
-                              (a, b) => selectedOrder[a]!
-                                  .compareTo(selectedOrder[b]!),
-                            );
-                          final orderedUserIds = indexed
-                              .map((i) => players[i].userId)
-                              .whereType<String>()
-                              .toList(growable: false);
-                          Navigator.of(dialogContext).pop(orderedUserIds);
-                        }
-                      : null,
-                  child: const Text('Хадгалах'),
-                ),
-              ],
             );
           },
         );
@@ -1507,10 +1682,10 @@ class _Game501PageState extends State<Game501Page> {
     Navigator.of(context).pop(<String, dynamic>{'completedGame': '501'});
   }
 
-  Future<void> _tryRestoreSavedSession() async {
-    final id = widget.initialSavedSessionId;
+  Future<void> _tryRestoreSavedSession({SavedGameSession? remote}) async {
+    final id = remote?.id ?? widget.initialSavedSessionId;
     if (id == null || id.isEmpty) return;
-    final saved = await _savedSessionsRepo.findById(id);
+    final saved = remote ?? await _savedSessionsRepo.findById(id);
     if (saved == null || !mounted) return;
 
     final p = saved.payload;
@@ -1522,6 +1697,43 @@ class _Game501PageState extends State<Game501Page> {
 
     setState(() {
       _activeSavedSessionId = saved.id;
+      void restoreInputs(String key, List<TextEditingController> controllers) {
+        final values = p[key] as List? ?? [];
+        for (var i = 0; i < controllers.length; i++) {
+          controllers[i].text = i < values.length ? values[i].toString() : '';
+        }
+      }
+
+      restoreInputs('scoreInputs', _scoreInputControllers);
+      restoreInputs('takenInputs', _takenPriceControllers);
+      restoreInputs('playInputs', _playPriceControllers);
+      final buttons = p['selectedButtons'] as List? ?? [];
+      for (var i = 0; i < _selectedScoreButtons.length; i++) {
+        _selectedScoreButtons[i].clear();
+        if (i < buttons.length) {
+          _selectedScoreButtons[i].addAll((buttons[i] as List)
+              .map((v) => _ScoreButtonType.values[(v as num).toInt()]));
+        }
+      }
+      _autoCorrectSeatIndexes
+        ..clear()
+        ..addAll((p['autoCorrectSeats'] as List? ?? [])
+            .map((v) => (v as num).toInt()));
+      _activeRecommendedSeatIndex = (p['recommendedSeat'] as num?)?.toInt();
+      _roundBefore.clear();
+      final before = p['roundBefore501'];
+      _originalOrder..clear()..addAll((p['originalOrder501'] as List? ?? []).map((e) => e.toString()));
+      if (before is Map) {
+        for (final e in before.entries) {
+          final i = int.tryParse(e.key.toString());
+          if (i != null && i >= 0 && i < _playingCount && e.value is num) {
+            _roundBefore[i] = (e.value as num).toInt();
+          }
+        }
+      }
+      _roundSubmitted
+        ..clear()
+        ..addAll(_roundBefore.keys);
       _roundNumber = (p['roundNumber'] as num? ?? _roundNumber).toInt();
       _isBoltMode = p['isBoltMode'] == true;
       _normalBasePrice =
@@ -1559,6 +1771,16 @@ class _Game501PageState extends State<Game501Page> {
 
   Future<void> _saveProgress() async {
     final payload = {
+      'scoreInputs': _scoreInputControllers.map((c) => c.text).toList(),
+      'takenInputs': _takenPriceControllers.map((c) => c.text).toList(),
+      'playInputs': _playPriceControllers.map((c) => c.text).toList(),
+      'selectedButtons': _selectedScoreButtons
+          .map((buttons) => buttons.map((b) => b.index).toList())
+          .toList(),
+      'autoCorrectSeats': _autoCorrectSeatIndexes.toList(),
+      'recommendedSeat': _activeRecommendedSeatIndex,
+      'roundBefore501': _roundBefore.map((k, v) => MapEntry('$k', v)),
+      'originalOrder501': _originalOrder,
       'roundNumber': _roundNumber,
       'isBoltMode': _isBoltMode,
       'normalBasePrice': _normalBasePrice,
@@ -1584,7 +1806,12 @@ class _Game501PageState extends State<Game501Page> {
       sessionId: _activeSavedSessionId,
       gameKey: 'game501',
       gameLabel: '501',
-      selectedUserIds: List<String>.from(widget.selectedUserIds),
+      selectedUserIds: _seats
+          .take(_activeSeatCount)
+          .map((p) => p.userId)
+          .whereType<String>()
+          .where((id) => id.isNotEmpty)
+          .toList(),
       payload: payload,
     );
     _activeSavedSessionId = id;
@@ -1685,7 +1912,9 @@ class _Game501PageState extends State<Game501Page> {
   }
 
   @override
-  Widget build(BuildContext context) {
+  Widget build(BuildContext context) => buildLiveGame(_buildGame(context));
+
+  Widget _buildGame(BuildContext context) {
     final topSeats = _seats.take(4).toList(growable: false);
     final bottomSeats = _seats.skip(4).take(3).toList(growable: false);
 
@@ -1721,12 +1950,25 @@ class _Game501PageState extends State<Game501Page> {
         onAddPlayer:
             _activeSeatCount < _seatCount ? _addPlayerFromSelectionPage : null,
         onSave: _saveProgress,
+        onCheckpoint: () => liveRepository.checkpoint(saveLiveProgress),
         onStatistics: _openStatisticsDashboard,
         onReport: _showReportActionsSheet,
         onPrint: _printSessionReport,
         onSettings: _showGameSettingsDialog,
         onExit: _showExitReportAndFinish,
         extraActions: [
+          IconButton(
+            tooltip: 'Дуугаар бүртгэх',
+            onPressed: liveCanEdit
+                ? () {
+                    _manualEntry = false;
+                    _voiceSeat = null;
+                    _voice.toggle();
+                  }
+                : null,
+            icon: Icon(Icons.mic,
+                color: _voice.enabled ? Colors.greenAccent : null),
+          ),
           IconButton(
             tooltip: _canTransferRegistrar
                 ? 'Бүртгэл хөтлөгчийн эрх шилжүүлэх'
@@ -1761,6 +2003,15 @@ class _Game501PageState extends State<Game501Page> {
                       child: Padding(
                         padding: const EdgeInsets.all(6),
                         child: _PlayerSeatCard(
+                          voiceField: _voice.enabled &&
+                                  !_manualEntry &&
+                                  _voiceSeat == index
+                              ? _voiceField
+                              : null,
+                          receiptSuit:
+                              _receiptSeat == index ? _receiptSuit : null,
+                          receiptValue: _receiptValue,
+                          onManual: _manual,
                           seat: topSeats[index],
                           seatIndex: index,
                           takenPriceController: _takenPriceControllers[index],
@@ -1778,8 +2029,7 @@ class _Game501PageState extends State<Game501Page> {
                               _seats[index].currentScore < 1000 &&
                               !_autoCorrectSeatIndexes.contains(index),
                           scoreControlsEnabled:
-                              _seats[index].currentScore < 1000 &&
-                                  !_autoCorrectSeatIndexes.contains(index),
+                              !_autoCorrectSeatIndexes.contains(index),
                           scoreInputEnabled: true,
                           isRecommendedActive:
                               _activeRecommendedSeatIndex == index ||
@@ -1838,6 +2088,10 @@ class _Game501PageState extends State<Game501Page> {
 class _PlayerSeatCard extends StatelessWidget {
   const _PlayerSeatCard({
     required this.seat,
+    this.voiceField,
+    this.receiptSuit,
+    this.receiptValue = 0,
+    this.onManual,
     this.seatIndex,
     this.compact = false,
     this.takenPriceController,
@@ -1866,6 +2120,10 @@ class _PlayerSeatCard extends StatelessWidget {
   });
 
   final _PlayerSeat seat;
+  final String? voiceField;
+  final _ScoreButtonType? receiptSuit;
+  final int receiptValue;
+  final VoidCallback? onManual;
   final int? seatIndex;
   final bool compact;
   final TextEditingController? takenPriceController;
@@ -1896,20 +2154,25 @@ class _PlayerSeatCard extends StatelessWidget {
   Widget build(BuildContext context) {
     final hasPlayer = seat.userId != null && seat.userId!.isNotEmpty;
 
-    return Container(
-      decoration: BoxDecoration(
-        borderRadius: BorderRadius.circular(16),
-        border: Border.all(
-          color: Colors.deepPurple.shade300,
-          width: compact ? 3.2 : 4.8,
-        ),
-        color:
-            showPlayerInfo && hasPlayer ? Colors.white : Colors.grey.shade100,
-      ),
-      child: !showPlayerInfo
-          ? _buildInactiveContent()
-          : (compact ? _buildCompactContent() : _buildRegularContent()),
-    );
+    return Listener(
+        onPointerDown: (_) => onManual?.call(),
+        child: VoicePlayerCue(
+            active: voiceField != null,
+            child: Container(
+              decoration: BoxDecoration(
+                borderRadius: BorderRadius.circular(16),
+                border: Border.all(
+                  color: Colors.deepPurple.shade300,
+                  width: compact ? 3.2 : 4.8,
+                ),
+                color: showPlayerInfo && hasPlayer
+                    ? Colors.white
+                    : Colors.grey.shade100,
+              ),
+              child: !showPlayerInfo
+                  ? _buildInactiveContent()
+                  : (compact ? _buildCompactContent() : _buildRegularContent()),
+            )));
   }
 
   Widget _buildInactiveContent() {
@@ -2216,6 +2479,25 @@ class _PlayerSeatCard extends StatelessWidget {
     FocusNode? focusNode,
     ValueChanged<String>? onSubmitted,
     TextInputAction textInputAction = TextInputAction.done,
+  }) =>
+      VoicePlayerCue(
+        active: voiceField == (title == 'Авсан үнэ' ? 'taken' : 'play'),
+        child: _buildRawInfoCell(
+            title: title,
+            controller: controller,
+            enabled: enabled,
+            focusNode: focusNode,
+            onSubmitted: onSubmitted,
+            textInputAction: textInputAction),
+      );
+
+  Widget _buildRawInfoCell({
+    required String title,
+    required TextEditingController controller,
+    required bool enabled,
+    FocusNode? focusNode,
+    ValueChanged<String>? onSubmitted,
+    TextInputAction textInputAction = TextInputAction.done,
   }) {
     return Container(
       padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 6),
@@ -2245,6 +2527,7 @@ class _PlayerSeatCard extends StatelessWidget {
               controller: controller,
               focusNode: focusNode,
               enabled: enabled,
+              onChanged: (_) => onManual?.call(),
               onSubmitted: onSubmitted,
               textAlign: TextAlign.center,
               textAlignVertical: TextAlignVertical.center,
@@ -2272,6 +2555,20 @@ class _PlayerSeatCard extends StatelessWidget {
     required bool enabled,
     FocusNode? focusNode,
     ValueChanged<String>? onSubmitted,
+  }) =>
+      VoicePlayerCue(
+          active: voiceField == 'score',
+          child: _buildRawActionValueCell(
+              controller: controller,
+              enabled: enabled,
+              focusNode: focusNode,
+              onSubmitted: onSubmitted));
+
+  Widget _buildRawActionValueCell({
+    required TextEditingController controller,
+    required bool enabled,
+    FocusNode? focusNode,
+    ValueChanged<String>? onSubmitted,
   }) {
     return Container(
       alignment: Alignment.center,
@@ -2284,6 +2581,7 @@ class _PlayerSeatCard extends StatelessWidget {
         controller: controller,
         focusNode: focusNode,
         enabled: scoreInputEnabled,
+        onChanged: (_) => onManual?.call(),
         onSubmitted: onSubmitted,
         textAlign: TextAlign.center,
         keyboardType: TextInputType.number,
@@ -2303,6 +2601,34 @@ class _PlayerSeatCard extends StatelessWidget {
   }
 
   Widget _buildAssetButton(int index, _ScoreButtonConfig config) {
+    return VoicePlayerCue(
+        active: voiceField == 'suits',
+        child: Stack(
+          fit: StackFit.expand,
+          children: [
+            _buildRawAssetButton(index, config),
+            if (receiptSuit == config.type)
+              Center(
+                  child: IgnorePointer(
+                      child: Container(
+                padding: const EdgeInsets.symmetric(horizontal: 6, vertical: 3),
+                decoration: BoxDecoration(
+                    color: receiptValue > 0
+                        ? Colors.green.shade800
+                        : Colors.red.shade800,
+                    borderRadius: BorderRadius.circular(12)),
+                child: Text(
+                    '${receiptValue > 0 ? '+' : '−'}${receiptValue.abs()}',
+                    style: const TextStyle(
+                        color: Colors.white,
+                        fontSize: 22,
+                        fontWeight: FontWeight.bold)),
+              ))),
+          ],
+        ));
+  }
+
+  Widget _buildRawAssetButton(int index, _ScoreButtonConfig config) {
     final isSelected = selectedScoreButtons.contains(config.type);
     final isLocked = disabledScoreButtons.contains(config.type);
     final isInteractive = scoreControlsEnabled && !isLocked;
@@ -2319,6 +2645,7 @@ class _PlayerSeatCard extends StatelessWidget {
 
       if (event.logicalKey == LogicalKeyboardKey.space) {
         if (!isInteractive) return KeyEventResult.handled;
+        onManual?.call();
         onScoreButtonSpacePressed?.call(index);
         return KeyEventResult.handled;
       }

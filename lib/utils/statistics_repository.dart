@@ -1,8 +1,10 @@
 import 'dart:convert';
+import 'package:flutter/foundation.dart';
 
 import 'package:shared_preferences/shared_preferences.dart';
 
 const String kStatisticsStoreKey = 'toocoob.statistics.sessions.v1';
+const String kStatisticsAchievementsKey = 'toocoob.statistics.achievements.v1';
 
 class StatsPlayerResult {
   StatsPlayerResult({
@@ -80,6 +82,37 @@ class StatsSession {
 enum StatsPeriod { all, month, quarter, year }
 
 class StatsRepository {
+  static final revision = ValueNotifier<int>(0);
+  Future<int> incrementAchievement(
+    String userId,
+    String achievementKey,
+  ) async {
+    final prefs = await SharedPreferences.getInstance();
+    final raw = prefs.getString(kStatisticsAchievementsKey);
+    final store = <String, dynamic>{};
+
+    if (raw != null && raw.trim().isNotEmpty) {
+      try {
+        final decoded = jsonDecode(raw);
+        if (decoded is Map) {
+          store.addAll(Map<String, dynamic>.from(decoded));
+        }
+      } catch (_) {
+        // Start with a clean achievement store if local JSON is invalid.
+      }
+    }
+
+    final userAchievements = Map<String, dynamic>.from(
+      store[userId] as Map? ?? const <String, dynamic>{},
+    );
+    final nextCount =
+        (userAchievements[achievementKey] as num? ?? 0).toInt() + 1;
+    userAchievements[achievementKey] = nextCount;
+    store[userId] = userAchievements;
+    await prefs.setString(kStatisticsAchievementsKey, jsonEncode(store));
+    return nextCount;
+  }
+
   Future<List<StatsSession>> loadSessions() async {
     final prefs = await SharedPreferences.getInstance();
     final raw = prefs.getString(kStatisticsStoreKey);
@@ -107,6 +140,7 @@ class StatsRepository {
       'sessions': sessions.map((s) => s.toJson()).toList(),
     };
     await prefs.setString(kStatisticsStoreKey, jsonEncode(payload));
+    revision.value++;
   }
 
   Future<void> addSession(StatsSession session) async {

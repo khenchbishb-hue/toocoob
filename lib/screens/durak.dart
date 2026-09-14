@@ -1,4 +1,9 @@
-import 'package:cloud_firestore/cloud_firestore.dart';
+import '../utils/win_voice_controller.dart';
+import '../utils/durak_team_command.dart';
+import '../widgets/voice_player_cue.dart';
+import '../utils/player_profiles.dart';
+import 'package:toocoob/utils/live_game_state.dart';
+
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
 import 'package:pdf/widgets.dart' as pw;
@@ -39,13 +44,103 @@ enum _DurakStage { setup, direct, group, finalStage, completed }
 
 enum _DurakBetMode { perMember, perTeam }
 
-class _DurakPageState extends State<DurakPage> {
-  final SavedGameSessionsRepository _savedSessionsRepo =
-      SavedGameSessionsRepository();
+class _DurakPageState extends State<DurakPage> with LiveGameState<DurakPage> {
+  @override
+  LiveGameSessionsRepository get liveRepository => _savedSessionsRepo;
+  @override
+  String? get liveRegistrar => _currentRegistrarUserId;
+  @override
+  Future<void> saveLiveProgress() => _saveProgress();
+  @override
+  Future<void> restoreLiveProgress(SavedGameSession saved) async {
+    await _tryRestoreSavedSession(remote: saved);
+    _currentRegistrarUserId =
+        saved.payload['currentRegistrarUserId'] as String? ??
+            _currentRegistrarUserId;
+  }
+
+  final LiveGameSessionsRepository _savedSessionsRepo =
+      LiveGameSessionsRepository();
   final ActiveTablesRepository _activeTablesRepo = ActiveTablesRepository();
   static const int _maxPlayers = 8;
   static const Color _tableColor = Color(0xFF263238);
 
+  bool _voiceApplyingWin = false;
+  List<int> get _voiceBlocks => List<int>.generate(_setupBlocks.length, (i) => i)
+      .where((i) => _isBlockInteractive(i) && !_inactiveBlockIndexes.contains(i) && _setupBlocks[i].isNotEmpty).toList();
+  late final WinVoiceController _durakVoice = WinVoiceController(
+    onGlobalCommand: (text) {
+      final threshold = parseWinThreshold(text);
+      if (threshold != null) {
+        if (_stage != _DurakStage.setup) return 'Босгыг тоглолт эхлэхээс өмнө тохируулна';
+        if (threshold < 1 || threshold > 8) return 'Босго 1–8 байна';
+        _setTargetWins(threshold);
+        return '✓ Хожлын босго: $threshold';
+      }
+      if (isStartGameCommand(text)) {
+        if (_stage != _DurakStage.setup) return 'Тоглолт эхэлсэн байна';
+        if (_setupBlocks.where((b) => b.isNotEmpty).length < 2) return 'Дор хаяж хоёр тал бүрдүүлнэ үү';
+        _startFromSetupBlocks(fromVoice: true);
+        return '✓ Тоглолт эхэллээ';
+      }
+      return null;
+    },
+    names: () => _stage == _DurakStage.setup
+        ? _players.map((p) => [p.displayName, p.username]).toList()
+        : _voiceBlocks.map((block) => <String>[
+      _setupBlocks[block].map((i) => _players[i].displayName).join(', '),
+      if (_teamNumbers.containsKey(block)) 'баг ${_teamNumbers[block]}',
+      for (final index in _setupBlocks[block]) ...[
+        _players[index].displayName, _players[index].username,
+      ],
+    ]).toList(),
+    canEdit: () => mounted && liveCanEdit && !_voiceApplyingWin &&
+        (_stage == _DurakStage.setup || _voiceBlocks.isNotEmpty) && ModalRoute.of(context)?.isCurrent == true,
+    parseAction: (text) => _stage == _DurakStage.setup ? parseDurakTeamCommand(text) : parseWinVoiceAction(text),
+    formatResult: (name, value) => _stage == _DurakStage.setup
+        ? '✓ $name → Баг $value'
+        : '✓ $name: ${value > 0 ? '+1' : '−1'} хожил',
+    apply: (index, delta) async {
+      if (_stage == _DurakStage.setup) {
+        if (index < 0 || index >= _players.length || delta < 1 || delta > _setupBlocks.length) return false;
+        final destination = _teamNumbers.entries.where((e) => e.value == delta).firstOrNull?.key;
+        var target = destination ?? _setupBlocks.indexWhere((b) => b.length == 1 && b.contains(index));
+        if (target < 0) target = _setupBlocks.indexWhere((b) => b.isEmpty);
+        if (target < 0) return false;
+        setState(() {
+          for (final block in _setupBlocks) { block.remove(index); }
+          _setupBlocks[target].add(index);
+          _teamNumbers.removeWhere((slot, _) => _setupBlocks[slot].isEmpty);
+          _teamNumbers[target] = delta;
+        });
+        _durakVoice.receipt(target, 1);
+        return true;
+      }
+      final blocks = _voiceBlocks;
+      if (index < 0 || index >= blocks.length || (delta < 0 && _isSingleGroupMode)) return false;
+      final block = blocks[index];
+      final before = _blockWins[block] ?? 0;
+      if ((before + delta).clamp(0, _targetWins) == before) return false;
+      _voiceApplyingWin = true;
+      try { await _changeBlockWins(block, delta); }
+      finally { _voiceApplyingWin = false; }
+      return true;
+    },
+  )..addListener(_refreshDurakVoice);
+  void _refreshDurakVoice() { if (mounted) setState(() {}); }
+  bool _voiceSelectedBlock(int block) {
+    final index = _durakVoice.target;
+    if (_stage == _DurakStage.setup) {
+      return (_durakVoice.enabled && index != null && _setupBlocks[block].contains(index)) ||
+          _durakVoice.receiptPlayer == block;
+    }
+    final blocks = _voiceBlocks;
+    return _durakVoice.enabled && !_voiceApplyingWin && index != null && index < blocks.length && blocks[index] == block;
+  }
+  @override
+  Widget? get liveCommandIndicator => _durakVoice.indicator;
+  @override
+  Widget? get liveCommandHint => _durakVoice.stopHint;
   int _targetWins = 3;
   int _betAmount = 5000;
   int _boltBetAmount = 10000;
@@ -62,6 +157,7 @@ class _DurakPageState extends State<DurakPage> {
   _DurakStage _stage = _DurakStage.setup;
   List<_DurakPlayer> _players = [];
   List<List<int>> _setupBlocks = List<List<int>>.generate(8, (_) => []);
+  final Map<int, int> _teamNumbers = {};
   Set<int> _activeBlockIndexes = <int>{};
   Set<int> _inactiveBlockIndexes = <int>{};
   final Map<int, int> _blockWins = <int, int>{};
@@ -144,7 +240,7 @@ class _DurakPageState extends State<DurakPage> {
   void initState() {
     super.initState();
     _currentRegistrarUserId = widget.currentUserId;
-    _initialize();
+    initializeLiveGame(_initialize);
   }
 
   Future<void> _transferRegistrarRole() async {
@@ -220,10 +316,10 @@ class _DurakPageState extends State<DurakPage> {
     _resetToSetup();
   }
 
-  Future<bool> _tryRestoreSavedSession() async {
-    final id = widget.initialSavedSessionId;
+  Future<bool> _tryRestoreSavedSession({SavedGameSession? remote}) async {
+    final id = remote?.id ?? widget.initialSavedSessionId;
     if (id == null || id.isEmpty) return false;
-    final saved = await _savedSessionsRepo.findById(id);
+    final saved = remote ?? await _savedSessionsRepo.findById(id);
     if (saved == null || !mounted) return false;
 
     final p = saved.payload;
@@ -278,6 +374,20 @@ class _DurakPageState extends State<DurakPage> {
           .clamp(0, _DurakStage.values.length - 1))];
       _players = playersFromPayload();
       _setupBlocks = blocksFromPayload();
+      _teamNumbers.clear();
+      final savedTeams = p['teamNumbers'] as Map?;
+      if (savedTeams != null) {
+        for (final entry in savedTeams.entries) {
+          final slot = int.tryParse(entry.key.toString());
+          final number = entry.value;
+          if (slot != null && slot >= 0 && slot < _setupBlocks.length &&
+              _setupBlocks[slot].isNotEmpty && number is int) _teamNumbers[slot] = number;
+        }
+      } else {
+        for (var slot = 0; slot < _setupBlocks.length; slot++) {
+          if (_setupBlocks[slot].length > 1) _teamNumbers[slot] = _teamNumbers.length + 1;
+        }
+      }
       _activeBlockIndexes =
           ((p['activeBlockIndexes'] as List? ?? const <dynamic>[])
               .map((e) => (e as num).toInt())).toSet();
@@ -331,6 +441,7 @@ class _DurakPageState extends State<DurakPage> {
               })
           .toList(),
       'setupBlocks': _setupBlocks,
+      'teamNumbers': _teamNumbers.map((slot, number) => MapEntry('$slot', number)),
       'activeBlockIndexes': _activeBlockIndexes.toList(),
       'inactiveBlockIndexes': _inactiveBlockIndexes.toList(),
       'blockWins': _blockWins.map((k, v) => MapEntry('$k', v)),
@@ -350,7 +461,11 @@ class _DurakPageState extends State<DurakPage> {
       sessionId: _activeSavedSessionId,
       gameKey: 'durak',
       gameLabel: 'Дурак',
-      selectedUserIds: List<String>.from(widget.selectedUserIds),
+      selectedUserIds: _players
+          .map((p) => p.userId)
+          .whereType<String>()
+          .where((id) => id.isNotEmpty)
+          .toList(),
       payload: payload,
     );
     _activeSavedSessionId = id;
@@ -393,11 +508,7 @@ class _DurakPageState extends State<DurakPage> {
       if (userId == null || userId.isEmpty) continue;
 
       try {
-        final snapshot = await FirebaseFirestore.instance
-            .collection('users')
-            .doc(userId)
-            .get();
-        final data = snapshot.data();
+        final data = await loadPlayerProfile(userId);
         if (data == null) continue;
 
         final username = (data['username'] as String?)?.trim();
@@ -439,7 +550,7 @@ class _DurakPageState extends State<DurakPage> {
       _isMiddleBooltMode = false;
       _isSingleBooltPhase = false;
       _championBlockIndex = null;
-      _setupBlocks = blocks;
+      _teamNumbers.clear(); _setupBlocks = blocks;
       _activeBlockIndexes = <int>{};
       _inactiveBlockIndexes = <int>{};
       _blockWins.clear();
@@ -466,7 +577,28 @@ class _DurakPageState extends State<DurakPage> {
     return 'u:${player.username}';
   }
 
+  void _remapTeamNumbers(List<List<int>> next) {
+    final remapped = <int, int>{};
+    for (var slot = 0; slot < next.length; slot++) {
+      if (next[slot].isEmpty) continue;
+      for (final entry in _teamNumbers.entries) {
+        final old = _setupBlocks[entry.key];
+        if (old.length == next[slot].length && old.every(next[slot].contains)) {
+          remapped[slot] = entry.value;
+          break;
+        }
+      }
+    }
+    for (var slot = 0; slot < next.length; slot++) {
+      if (next[slot].length < 2 || remapped.containsKey(slot)) continue;
+      var number = 1;
+      while (remapped.containsValue(number)) { number++; }
+      remapped[slot] = number;
+    }
+    _teamNumbers..clear()..addAll(remapped);
+  }
   void _mergeSetupBlocks(int sourceIndex, int targetIndex) {
+    _durakVoice.manual();
     if (sourceIndex == targetIndex) return;
     if (_setupBlocks[sourceIndex].isEmpty ||
         _setupBlocks[targetIndex].isEmpty) {
@@ -476,10 +608,17 @@ class _DurakPageState extends State<DurakPage> {
     setState(() {
       _setupBlocks[targetIndex].addAll(_setupBlocks[sourceIndex]);
       _setupBlocks[sourceIndex] = [];
+      _teamNumbers.remove(sourceIndex);
+      _teamNumbers.putIfAbsent(targetIndex, () {
+        var number = 1;
+        while (_teamNumbers.containsValue(number)) { number++; }
+        return number;
+      });
     });
   }
 
-  void _startFromSetupBlocks() {
+  void _startFromSetupBlocks({bool fromVoice = false}) {
+    if (!fromVoice) _durakVoice.manual();
     final nonEmptyBlockIndexes = <int>[];
     for (int i = 0; i < _setupBlocks.length; i++) {
       if (_setupBlocks[i].isNotEmpty) {
@@ -541,7 +680,7 @@ class _DurakPageState extends State<DurakPage> {
       _championBlockIndex = null;
       _stage = nextStage;
       final previousBlocks = _setupBlocks;
-      _setupBlocks = nextBlocks;
+      _remapTeamNumbers(nextBlocks); _setupBlocks = nextBlocks;
       _activeBlockIndexes = nextActive;
       _inactiveBlockIndexes = <int>{
         for (int i = 0; i < 8; i++)
@@ -788,7 +927,7 @@ class _DurakPageState extends State<DurakPage> {
     setState(() {
       _stage = _DurakStage.finalStage;
       _roundNumber += 1;
-      _setupBlocks = nextBlocks;
+      _remapTeamNumbers(nextBlocks); _setupBlocks = nextBlocks;
       _activeBlockIndexes = nextActive;
       _inactiveBlockIndexes = <int>{
         for (int i = 0; i < 8; i++)
@@ -987,7 +1126,9 @@ class _DurakPageState extends State<DurakPage> {
   }
 
   @override
-  Widget build(BuildContext context) {
+  Widget build(BuildContext context) => buildLiveGame(_buildGame(context));
+
+  Widget _buildGame(BuildContext context) {
     final isSetup = _stage == _DurakStage.setup;
 
     return Scaffold(
@@ -1019,12 +1160,15 @@ class _DurakPageState extends State<DurakPage> {
         onRemovePlayer: _showRemovePlayerDialog,
         onAddPlayer: _addPlayerFromAppBar,
         onSave: _saveProgress,
+          onCheckpoint: () => liveRepository.checkpoint(saveLiveProgress),
         onStatistics: _openStatisticsDashboard,
         onReport: _showExitReportAndFinish,
         onPrint: _printSessionReport,
         onSettings: _showDurakSettingsDialog,
         onExit: _showExitReportAndFinish,
         extraActions: [
+          IconButton(onPressed: liveCanEdit ? _durakVoice.toggle : null, tooltip: 'Дуугаар хожил бүртгэх',
+            icon: Icon(_durakVoice.enabled ? Icons.mic : Icons.mic_none, color: _durakVoice.enabled ? Colors.greenAccent : null)),
           IconButton(
             tooltip: _canTransferRegistrar
                 ? 'Тоглолт бүртгэх эрх шилжүүлэх'
@@ -1050,7 +1194,7 @@ class _DurakPageState extends State<DurakPage> {
               width: double.infinity,
               padding: const EdgeInsets.symmetric(horizontal: 14, vertical: 12),
               decoration: BoxDecoration(
-                color: Colors.white.withOpacity(0.12),
+                color: Colors.white.withValues(alpha: 0.12),
                 borderRadius: BorderRadius.circular(14),
               ),
               child: Column(
@@ -1154,7 +1298,7 @@ class _DurakPageState extends State<DurakPage> {
     _isMiddleBooltMode = false;
     _isSingleBooltPhase = false;
     _championBlockIndex = null;
-    _setupBlocks = blocks;
+    _teamNumbers.clear(); _setupBlocks = blocks;
     _activeBlockIndexes = <int>{};
     _inactiveBlockIndexes = <int>{};
     _blockWins.clear();
@@ -1442,17 +1586,12 @@ class _DurakPageState extends State<DurakPage> {
     if (!mounted || selectedToAdd == null || selectedToAdd.isEmpty) return;
 
     final existingKeys = _players.map(_playerKey).toSet();
-    final docs = await Future.wait(
-      selectedToAdd.map(
-        (userId) =>
-            FirebaseFirestore.instance.collection('users').doc(userId).get(),
-      ),
-    );
+    final profiles = await Future.wait(selectedToAdd.map(loadPlayerProfile));
 
     final toAppend = <_DurakPlayer>[];
-    for (final doc in docs) {
-      final data = doc.data();
-      final userId = doc.id;
+    for (int i = 0; i < selectedToAdd.length; i++) {
+      final data = profiles[i];
+      final userId = selectedToAdd[i];
       final key = 'id:$userId';
       if (existingKeys.contains(key)) continue;
       if (_players.length + toAppend.length >= _maxPlayers) break;
@@ -1503,7 +1642,7 @@ class _DurakPageState extends State<DurakPage> {
 
     setState(() {
       _players = [..._players, ...toAppend];
-      _setupBlocks = nextBlocks;
+      _remapTeamNumbers(nextBlocks); _setupBlocks = nextBlocks;
       _sessionAddedPlayers += toAppend.length;
       _teamMoneyByBlock.removeWhere(
         (index, _) => index >= nextBlocks.length || nextBlocks[index].isEmpty,
@@ -1527,7 +1666,7 @@ class _DurakPageState extends State<DurakPage> {
 
     setState(() {
       _players = nextPlayers;
-      _setupBlocks = nextBlocks;
+      _remapTeamNumbers(nextBlocks); _setupBlocks = nextBlocks;
       _activeBlockIndexes = _activeBlockIndexes
           .where((index) =>
               index < nextBlocks.length && nextBlocks[index].isNotEmpty)
@@ -1671,7 +1810,13 @@ class _DurakPageState extends State<DurakPage> {
     return const SizedBox.shrink();
   }
 
-  Widget _buildSetupBlock(int blockIndex, {required bool isLarge}) {
+  Widget _buildSetupBlock(int blockIndex, {required bool isLarge}) => VoicePlayerCue(
+      active: _voiceSelectedBlock(blockIndex), child: Column(children: [
+        if (_teamNumbers.containsKey(blockIndex) && _setupBlocks[blockIndex].isNotEmpty)
+          Text('Баг ${_teamNumbers[blockIndex]}', style: const TextStyle(color: Colors.white, fontWeight: FontWeight.bold)),
+        Expanded(child: _buildSetupBlockContent(blockIndex, isLarge: isLarge)),
+      ]));
+  Widget _buildSetupBlockContent(int blockIndex, {required bool isLarge}) {
     final memberIndexes = _setupBlocks[blockIndex];
     final hasMembers = memberIndexes.isNotEmpty;
     final members =
@@ -1686,8 +1831,8 @@ class _DurakPageState extends State<DurakPage> {
       decoration: BoxDecoration(
         color: hasMembers
             ? (isInactive
-                ? Colors.black.withOpacity(0.18)
-                : Colors.black.withOpacity(0.35))
+                ? Colors.black.withValues(alpha: 0.18)
+                : Colors.black.withValues(alpha: 0.35))
             : Colors.white10,
         borderRadius: BorderRadius.circular(14),
         border: Border.all(
@@ -1895,12 +2040,12 @@ class _DurakPageState extends State<DurakPage> {
                           ),
                           child: GestureDetector(
                             onTap: isInteractive && !isInactive
-                                ? () => _changeBlockWins(blockIndex, 1)
+                                ? () { _durakVoice.manual(); _changeBlockWins(blockIndex, 1); }
                                 : null,
                             onLongPress: isInteractive &&
                                     !isInactive &&
                                     !_isSingleGroupMode
-                                ? () => _changeBlockWins(blockIndex, -1)
+                                ? () { _durakVoice.manual(); _changeBlockWins(blockIndex, -1); }
                                 : null,
                             child: Icon(
                               Icons.star_rounded,
@@ -1948,7 +2093,7 @@ class _DurakPageState extends State<DurakPage> {
             boxShadow: isHovering
                 ? [
                     BoxShadow(
-                      color: Colors.amber.withOpacity(0.45),
+                      color: Colors.amber.withValues(alpha: 0.45),
                       blurRadius: 10,
                       spreadRadius: 1,
                     ),
@@ -2027,6 +2172,13 @@ class _DurakPageState extends State<DurakPage> {
       return NetworkImage(photoUrl);
     }
     return null;
+  }
+
+  @override
+  void dispose() {
+    _durakVoice.dispose();
+    stopLiveGame();
+    super.dispose();
   }
 }
 

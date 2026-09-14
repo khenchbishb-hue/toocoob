@@ -1,8 +1,17 @@
+import 'package:speech_to_text/speech_to_text.dart' as stt;
+import '../utils/game_speech.dart';
+import '../utils/voice_player_selection.dart';
+import '../utils/poker_voice_score.dart';
+import '../widgets/voice_player_cue.dart';
+import '../utils/demo_players.dart';
+import '../utils/player_profiles.dart';
+import 'package:toocoob/utils/live_game_state.dart';
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
 import 'package:cloud_firestore/cloud_firestore.dart';
 import 'package:firebase_core/firebase_core.dart';
 import 'package:flutter/foundation.dart';
+import 'dart:async';
 import 'dart:convert';
 import 'package:file_selector/file_selector.dart';
 import 'package:pdf/widgets.dart' as pw;
@@ -12,6 +21,7 @@ import 'package:shared_preferences/shared_preferences.dart';
 import '../utils/statistics_repository.dart';
 import '../utils/saved_game_sessions_repository.dart';
 import '../utils/active_tables_repository.dart';
+import '../utils/game_sync_service.dart';
 import 'statistics_dashboard.dart';
 import '108.dart';
 import '5_card_texas.dart';
@@ -135,11 +145,105 @@ class ThirteenCardPokerScreen extends StatefulWidget {
   State<ThirteenCardPokerScreen> createState() => _PlayingTableScreenState();
 }
 
-class _PlayingTableScreenState extends State<ThirteenCardPokerScreen> {
+class _PokerTableRuntimeState {
+  _PokerTableRuntimeState({
+    this.roundNumber = 1,
+    this.isBoltMode = false,
+    this.boltRoundNumber = 0,
+    this.middleTieDecisionMade = false,
+    this.currentBoltUserId,
+    this.completedBoltUserIds = const <String>{},
+    this.eighthBlockInputs = const <String>['', '', '', ''],
+  });
+
+  final int roundNumber;
+  final bool isBoltMode;
+  final int boltRoundNumber;
+  final bool middleTieDecisionMade;
+  final String? currentBoltUserId;
+  final Set<String> completedBoltUserIds;
+  final List<String> eighthBlockInputs;
+
+  Map<String, dynamic> toJson() => {
+        'roundNumber': roundNumber,
+        'isBoltMode': isBoltMode,
+        'boltRoundNumber': boltRoundNumber,
+        'middleTieDecisionMade': middleTieDecisionMade,
+        'currentBoltUserId': currentBoltUserId,
+        'completedBoltUserIds': completedBoltUserIds.toList(),
+        'eighthBlockInputs': eighthBlockInputs,
+      };
+
+  factory _PokerTableRuntimeState.fromJson(Map<String, dynamic> json) {
+    final inputs = (json['eighthBlockInputs'] as List<dynamic>? ?? const [])
+        .map((value) => value.toString())
+        .take(4)
+        .toList();
+    while (inputs.length < 4) {
+      inputs.add('');
+    }
+    return _PokerTableRuntimeState(
+      roundNumber: (json['roundNumber'] as num?)?.toInt() ?? 1,
+      isBoltMode: json['isBoltMode'] as bool? ?? false,
+      boltRoundNumber: (json['boltRoundNumber'] as num?)?.toInt() ?? 0,
+      middleTieDecisionMade: json['middleTieDecisionMade'] as bool? ?? false,
+      currentBoltUserId: json['currentBoltUserId'] as String?,
+      completedBoltUserIds:
+          (json['completedBoltUserIds'] as List<dynamic>? ?? const [])
+              .whereType<String>()
+              .toSet(),
+      eighthBlockInputs: inputs,
+    );
+  }
+}
+
+class _PlayingTableScreenState extends State<ThirteenCardPokerScreen>
+    with LiveGameState<ThirteenCardPokerScreen> {
+  @override
+  LiveGameSessionsRepository get liveRepository => _savedSessionsRepo;
+  @override
+  String? get liveRegistrar => _currentRegistrarUserId;
+  @override
+  Future<void> saveLiveProgress() async {
+    if (_isResolvingRound ||
+        _isSubmittingInlineScore ||
+        _isProcessingEighthSubmit) return;
+    await _saveProgress();
+  }
+
+  @override
+  Future<void> restoreLiveProgress(SavedGameSession saved) async {
+    await _tryRestoreSavedSession(remote: saved);
+    _currentRegistrarUserId =
+        saved.payload['currentRegistrarUserId'] as String? ??
+            _currentRegistrarUserId;
+  }
+
+  @override
+  bool get usesSeparateTableSync => true;
   static const String _statisticsPrefsKey = 'toocoob.statistics.v1';
-  final SavedGameSessionsRepository _savedSessionsRepo =
-      SavedGameSessionsRepository();
+  final LiveGameSessionsRepository _savedSessionsRepo =
+      LiveGameSessionsRepository();
   final ActiveTablesRepository _activeTablesRepo = ActiveTablesRepository();
+  final GameSyncService _gameSyncService = GameSyncService();
+  bool _remoteSyncReady = false;
+  bool get _canEditLiveTable =>
+      _currentActiveTableLockId() == null ||
+      (_remoteSyncReady && _canCurrentDeviceWriteTable(currentTable));
+  bool _remoteUploadBusy = false;
+  @override
+  void onLiveReady() async {
+    final lockId = _currentActiveTableLockId();
+    if (lockId == null) return;
+    try {
+      final table = await _activeTablesRepo.fetchActiveTableDetails(lockId);
+      if (!mounted) return;
+      _currentRegistrarUserId = table?.ownerUserId ?? _currentRegistrarUserId;
+      _startRemoteTableSync(lockId);
+    } catch (_) {
+      if (mounted) liveRepository.status.value = 'Ширээний синк холбогдсонгүй';
+    }
+  }
 
   // --- State variables ---
   int currentTable = 1;
@@ -161,10 +265,146 @@ class _PlayingTableScreenState extends State<ThirteenCardPokerScreen> {
   dynamic _pokerGame; // Use correct type if available
   bool _playerOrderSelected = false;
   bool _tableSplitSelected = false;
+  bool _tableCountDecisionMade = false;
+  bool _tableCountDecisionInProgress = false;
   final Map<String, int> _roundScores = {};
   final Map<String, int> _totalScores = {};
   final Map<String, int> _winsByUserId = {};
   final Map<String, int> _moneyByUserId = {};
+  final _pokerSpeech = stt.SpeechToText();
+  bool _pokerMic = false, _pokerListening = false, _pokerRenewing = false;
+  bool _pokerManual = false, _pokerHint = true;
+  int _pokerSession = 0;
+  String? _pokerTarget;
+  String _pokerMessage = 'Командаа хэлнэ үү';
+  String? _pokerFeedback;
+  Timer? _pokerStable;
+
+  @override
+  Widget? get liveCommandIndicator => !_pokerMic ? null : Text(
+      _pokerManual ? 'Гараар оруулж байна — Enter дарна уу' : _pokerMessage,
+      maxLines: 2, overflow: TextOverflow.ellipsis, textAlign: TextAlign.center,
+      style: TextStyle(color: _pokerListening ? Colors.lightGreenAccent : Colors.white70, fontSize: 13));
+  @override
+  Widget? get liveCommandHint => _pokerMic && _pokerHint
+      ? const Text('Микрофон унтраах: “Боллоо”', style: TextStyle(color: Colors.white70, fontSize: 12)) : null;
+
+  String _pokerNormalize(String value) => value.toLowerCase()
+      .replaceAll(RegExp(r'[^а-яөүёa-z0-9 -]'), ' ').replaceAll(RegExp(r'\s+'), ' ').trim();
+
+  Future<void> _togglePokerMic() async {
+    if (_pokerMic) {
+      _pokerSession++;
+      _pokerStable?.cancel();
+      setState(() { _pokerMic = false; _pokerListening = false; _pokerTarget = null; });
+      await _pokerSpeech.stop();
+      return;
+    }
+    if (!_canEditLiveTable) return;
+    final ready = await initializeGameSpeech(_pokerSpeech, onStatus: (status) {
+      if (!mounted || !_pokerMic) return;
+      if (status == 'listening') setState(() {
+        _pokerListening = true;
+        _pokerMessage = '${_pokerFeedback == null ? '' : '${_pokerFeedback!} • '}Командаа хэлнэ үү';
+      });
+      if ((status == 'done' || status == 'notListening') && !_pokerRenewing) {
+        _renewPokerSpeech();
+      }
+    }, onError: (error) {
+      if (!mounted) return;
+      setState(() { _pokerMessage = 'Дуу танигдсангүй: ${error.errorMsg}'; _pokerListening = false; });
+    });
+    if (!mounted || !ready) return;
+    setState(() { _pokerMic = true; _pokerManual = false; _pokerHint = true; _pokerFeedback = null; });
+    await _renewPokerSpeech();
+  }
+
+  Future<void> _renewPokerSpeech() async {
+    if (_pokerRenewing || !_pokerMic || !mounted) return;
+    _pokerRenewing = true;
+    final session = ++_pokerSession;
+    _pokerStable?.cancel();
+    setState(() { _pokerListening = false; _pokerMessage = '${_pokerFeedback ?? ''} Түр хүлээнэ үү…'.trim(); });
+    try {
+      await _pokerSpeech.stop();
+      final locales = await _pokerSpeech.locales();
+      if (!mounted || !_pokerMic || session != _pokerSession) return;
+      await _pokerSpeech.listen(onResult: (result) {
+        if (!mounted || !_pokerMic || session != _pokerSession) return;
+        final text = _pokerNormalize(result.recognizedWords);
+        if (_pokerManual) {
+          if (result.finalResult && RegExp(r'(^|\s)боллоо($|\s)').hasMatch(text)) _togglePokerMic();
+          return;
+        }
+        setState(() => _pokerMessage = 'Таны команд: ${result.recognizedWords}');
+        _pokerStable?.cancel();
+        if (result.finalResult) {
+          _consumePokerSpeech(text, session);
+        } else {
+          _pokerStable = Timer(const Duration(milliseconds: 650), () => _consumePokerSpeech(text, session));
+        }
+      }, listenOptions: stt.SpeechListenOptions(partialResults: true,
+        localeId: locales.where((l) => l.localeId.toLowerCase().startsWith('mn')).firstOrNull?.localeId));
+    } finally { _pokerRenewing = false; }
+  }
+
+  Future<void> _consumePokerSpeech(String text, int session) async {
+    if (!mounted || !_pokerMic || _pokerManual || session != _pokerSession || !_canEditLiveTable || ModalRoute.of(context)?.isCurrent != true) return;
+    _pokerSession++;
+    _pokerStable?.cancel();
+    if (RegExp(r'(^|\s)боллоо($|\s)').hasMatch(text)) { await _togglePokerMic(); return; }
+    final players = List<String>.from(_activeEighthScoringUserIds);
+    final aliases = players.map((id) => <String>{
+      _pokerNormalize(_displayNameForUserId(id, players.indexOf(id))),
+      for (final field in ['nickname', 'username', 'firstName'])
+        _pokerNormalize((_userProfiles[id]?[field] ?? '').toString()),
+    }..remove('')).toList();
+    final mention = lastVoicePlayerMention(text, aliases);
+    if (mention != null && mention.playerIndex == null) {
+      _pokerFeedback = 'Нэр давхцаж байна. Хочоор хэлнэ үү';
+    } else {
+      if (mention != null) {
+        _pokerTarget = players[mention.playerIndex!];
+        _pokerFeedback = '${_displayNameForUserId(_pokerTarget!, 0)}: оноогоо хэлнэ үү';
+        text = text.substring(mention.end).trim();
+      }
+      final index = players.indexOf(_pokerTarget ?? '');
+      if (index >= 0) {
+        _focusEighthCell(index);
+        final score = parsePokerVoiceScore(text);
+        if (score != null && score != 1331 && (score < 0 || score > 13)) {
+          setState(() => _pokerFeedback = 'Оноо 0–13 байна. Дахин хэлнэ үү.');
+          return;
+        }
+        if (score != null) {
+          setState(() {
+            _eighthBlockScoreControllers[index].text = '$score';
+            _pokerHint = false;
+            _pokerFeedback = '✓ ${_displayNameForUserId(players[index], index)}: $score оноо';
+          });
+          int? next;
+          for (var step = 1; step <= players.length; step++) {
+            final candidate = (index + step) % players.length;
+            if (_eighthBlockScoreControllers[candidate].text.trim().isEmpty) { next = candidate; break; }
+          }
+          if (next == null) {
+            _pokerTarget = null;
+            await _submitEighthCellFromKeyboard(players.length - 1);
+            _pokerHint = true;
+          } else {
+            _pokerTarget = players[next];
+            _focusEighthCell(next);
+          }
+        } else if (text.isNotEmpty) {
+          _pokerFeedback = 'Танигдсангүй. Оноогоо дахин хэлнэ үү';
+        }
+      } else {
+        _pokerFeedback = 'Эхлээд тоглогчийн нэр, хочийг хэлнэ үү';
+      }
+    }
+    if (mounted) setState(() {});
+    await _renewPokerSpeech();
+  }
   final Map<String, TextEditingController> _scoreControllers = {};
   final Map<String, FocusNode> _scoreFocusNodes = {};
   final List<TextEditingController> _eighthBlockScoreControllers =
@@ -184,6 +424,9 @@ class _PlayingTableScreenState extends State<ThirteenCardPokerScreen> {
   bool _isSubmittingInlineScore = false;
   bool _isProcessingEighthSubmit = false;
   bool _sessionAddedToStatistics = false;
+  bool _showConsecutive13Celebration = false;
+  String _consecutive13CelebrationText = '';
+  int _consecutive13CelebrationCount = 0;
   final List<String> _benchedUserIds = [];
   final List<String> _table1BenchedUserIds = [];
   final List<String> _table2BenchedUserIds = [];
@@ -205,8 +448,23 @@ class _PlayingTableScreenState extends State<ThirteenCardPokerScreen> {
   final List<List<String>> _durakBlocks = [];
   final int _durakWinThreshold = 8;
   String? _currentRegistrarUserId;
+  bool _useSeparateTableRegistrars = true;
+  final Map<int, String?> _tableRegistrarUserIds = <int, String?>{
+    1: null,
+    2: null,
+  };
+  StreamSubscription<List<GameSyncState>>? _remoteTableStatesSubscription;
+  Timer? _remoteSyncTimer;
+  String? _remoteSyncLockId;
+  final Map<int, String> _lastUploadedTableStateHashes = <int, String>{};
+  final Map<int, int> _lastAppliedRemoteRevisions = <int, int>{};
+  bool _applyingRemoteState = false;
   String? _activeSavedSessionId;
   bool _multiAutoReturnTriggered = false;
+  final Map<int, _PokerTableRuntimeState> _tableRuntimeStates = {
+    1: _PokerTableRuntimeState(),
+    2: _PokerTableRuntimeState(),
+  };
 
   bool get _canTransferRegistrarPermission {
     return widget.canManageGames &&
@@ -535,7 +793,7 @@ class _PlayingTableScreenState extends State<ThirteenCardPokerScreen> {
   int _benchCountForTable(List<String> tablePlayers) {
     final aliveCount =
         tablePlayers.where((userId) => !_isEliminatedByScore(userId)).length;
-    if (aliveCount <= 4 || aliveCount > 7) return 0;
+    if (aliveCount <= 4) return 0;
     return aliveCount - 4;
   }
 
@@ -570,8 +828,7 @@ class _PlayingTableScreenState extends State<ThirteenCardPokerScreen> {
   List<String> _currentBenchedUsersForTable(List<String> tablePlayers) {
     if (widget.gameType == '13 МОДНЫ ПОКЕР' &&
         !_tableSplitSelected &&
-        tablePlayers.length >= 5 &&
-        tablePlayers.length <= 7) {
+        tablePlayers.length >= 5) {
       return tablePlayers
           .skip(4)
           .where((userId) => !_isEliminatedByScore(userId))
@@ -849,7 +1106,7 @@ class _PlayingTableScreenState extends State<ThirteenCardPokerScreen> {
         return AlertDialog(
           title: const Text('Тоглолтын шийдвэр'),
           content: const Text(
-            'Бүх тоглогч 1 хожилтой боллоо. Дундаа боох нь ганц удаа Боолт горимоор тоглоод тоглолтыг дуусгана.',
+            'Бүх тоглогч 1 хожилтой боллоо. Дараагийн үйлдлээ сонгоно уу.',
           ),
           actions: [
             TextButton(
@@ -871,19 +1128,20 @@ class _PlayingTableScreenState extends State<ThirteenCardPokerScreen> {
   }
 
   void _resetForReplayKeepingMoney() {
-    _roundScores.clear();
-    _explicitZeroRoundUserIds.clear();
-    _paidOutRoundLoserUserIds.clear();
-    _totalScores.clear();
-    _winsByUserId.clear();
-    _forcedEliminatedUserIds.clear();
-    _benchedUserIds.clear();
-    _uRankings.clear();
-    _table1BenchedUserIds.clear();
-    _table2BenchedUserIds.clear();
-    _pinnedSubstituteUserIds.clear();
-    _table1PinnedSubstituteUserIds.clear();
-    _table2PinnedSubstituteUserIds.clear();
+    final tablePlayers = List<String>.from(_activeUserNames);
+    for (final userId in tablePlayers) {
+      _roundScores.remove(userId);
+      _explicitZeroRoundUserIds.remove(userId);
+      _paidOutRoundLoserUserIds.remove(userId);
+      _totalScores.remove(userId);
+      _winsByUserId.remove(userId);
+      _forcedEliminatedUserIds.remove(userId);
+      _uRankings.remove(userId);
+      _eighthRoundScoresByUserId.remove(userId);
+      _clearScoreInput(userId);
+    }
+    _setPreferredBenchedUsersForCurrentTable(const <String>[]);
+    _setPinnedSubstitutesForCurrentTable(const <String>[]);
     _isBoltMode = false;
     _boltRoundNumber = 0;
     _middleTieDecisionMade = false;
@@ -892,10 +1150,6 @@ class _PlayingTableScreenState extends State<ThirteenCardPokerScreen> {
     _completedBoltUserIds.clear();
     roundNumber = 1;
 
-    for (final userId in _orderedUserNames) {
-      _clearScoreInput(userId);
-    }
-    _eighthRoundScoresByUserId.clear();
     for (final controller in _eighthBlockScoreControllers) {
       controller.clear();
     }
@@ -909,11 +1163,11 @@ class _PlayingTableScreenState extends State<ThirteenCardPokerScreen> {
     }
   }
 
-  Future<void> _tryRestoreSavedSession() async {
-    final id = widget.initialSavedSessionId;
+  Future<void> _tryRestoreSavedSession({SavedGameSession? remote}) async {
+    final id = remote?.id ?? widget.initialSavedSessionId;
     if (id == null || id.isEmpty) return;
 
-    final saved = await _savedSessionsRepo.findById(id);
+    final saved = remote ?? await _savedSessionsRepo.findById(id);
     if (!mounted || saved == null || saved.gameKey != '13_card_poker') {
       return;
     }
@@ -1007,6 +1261,8 @@ class _PlayingTableScreenState extends State<ThirteenCardPokerScreen> {
           payload['playerOrderSelected'] as bool? ?? _playerOrderSelected;
       _tableSplitSelected =
           payload['tableSplitSelected'] as bool? ?? _tableSplitSelected;
+      _tableCountDecisionMade =
+          payload['tableCountDecisionMade'] as bool? ?? _tableSplitSelected;
       _roundScores
         ..clear()
         ..addAll(
@@ -1064,11 +1320,9 @@ class _PlayingTableScreenState extends State<ThirteenCardPokerScreen> {
         ..addAll(
             (payload['paidOutRoundLoserUserIds'] as List<dynamic>? ?? const [])
                 .whereType<String>());
-      _isResolvingRound = payload['isResolvingRound'] as bool? ?? false;
-      _isSubmittingInlineScore =
-          payload['isSubmittingInlineScore'] as bool? ?? false;
-      _isProcessingEighthSubmit =
-          payload['isProcessingEighthSubmit'] as bool? ?? false;
+      _isResolvingRound = false;
+      _isSubmittingInlineScore = false;
+      _isProcessingEighthSubmit = false;
       _sessionAddedToStatistics =
           payload['sessionAddedToStatistics'] as bool? ?? false;
       _benchedUserIds
@@ -1131,10 +1385,40 @@ class _PlayingTableScreenState extends State<ThirteenCardPokerScreen> {
               _sessionMiddleBoltRounds;
       _currentRegistrarUserId = payload['currentRegistrarUserId'] as String? ??
           _currentRegistrarUserId;
+      _useSeparateTableRegistrars =
+          payload['useSeparateTableRegistrars'] as bool? ?? true;
+      final rawTableRegistrars = Map<String, dynamic>.from(
+        payload['tableRegistrarUserIds'] as Map? ?? const <String, dynamic>{},
+      );
+      _tableRegistrarUserIds[1] = rawTableRegistrars['1'] as String?;
+      _tableRegistrarUserIds[2] = rawTableRegistrars['2'] as String?;
+
+      final rawTableStates = Map<String, dynamic>.from(
+        payload['tableRuntimeStates'] as Map? ?? const <String, dynamic>{},
+      );
+      if (rawTableStates.isNotEmpty) {
+        _tableRuntimeStates.clear();
+        for (final entry in rawTableStates.entries) {
+          final table = int.tryParse(entry.key);
+          if (table == null || entry.value is! Map) continue;
+          _tableRuntimeStates[table] = _PokerTableRuntimeState.fromJson(
+            Map<String, dynamic>.from(entry.value as Map),
+          );
+        }
+        _tableRuntimeStates.putIfAbsent(1, _PokerTableRuntimeState.new);
+        _tableRuntimeStates.putIfAbsent(2, _PokerTableRuntimeState.new);
+        _restoreTableRuntime(currentTable);
+      } else {
+        // Backward compatibility for sessions saved before per-table state.
+        _tableRuntimeStates[currentTable] = _snapshotCurrentTableRuntime();
+        _tableRuntimeStates.putIfAbsent(1, _PokerTableRuntimeState.new);
+        _tableRuntimeStates.putIfAbsent(2, _PokerTableRuntimeState.new);
+      }
     });
   }
 
   Future<void> _saveProgress() async {
+    _captureCurrentTableRuntime();
     final sessionId = await _savedSessionsRepo.saveOrUpdate(
       sessionId: _activeSavedSessionId,
       gameKey: '13_card_poker',
@@ -1159,6 +1443,7 @@ class _PlayingTableScreenState extends State<ThirteenCardPokerScreen> {
         'boltBetAmount': _boltBetAmount,
         'playerOrderSelected': _playerOrderSelected,
         'tableSplitSelected': _tableSplitSelected,
+        'tableCountDecisionMade': _tableCountDecisionMade,
         'roundScores': _roundScores,
         'totalScores': _totalScores,
         'winsByUserId': _winsByUserId,
@@ -1197,6 +1482,13 @@ class _PlayingTableScreenState extends State<ThirteenCardPokerScreen> {
         'sessionBoltRounds': _sessionBoltRounds,
         'sessionMiddleBoltRounds': _sessionMiddleBoltRounds,
         'currentRegistrarUserId': _currentRegistrarUserId,
+        'useSeparateTableRegistrars': _useSeparateTableRegistrars,
+        'tableRegistrarUserIds': _tableRegistrarUserIds.map(
+          (table, userId) => MapEntry(table.toString(), userId),
+        ),
+        'tableRuntimeStates': _tableRuntimeStates.map(
+          (table, state) => MapEntry(table.toString(), state.toJson()),
+        ),
       },
     );
 
@@ -2003,8 +2295,15 @@ class _PlayingTableScreenState extends State<ThirteenCardPokerScreen> {
     );
   }
 
+  void _startMiddleBoltRound() {
+    _middleTieDecisionMade = true;
+    _isBoltMode = true;
+    _boltRoundNumber = 1;
+    _currentBoltUserId = null;
+  }
+
   Future<void> _showCycleCompletedDialog() async {
-    final shouldReplay = await showDialog<bool>(
+    final action = await showDialog<String>(
       context: context,
       barrierDismissible: false,
       builder: (dialogContext) {
@@ -2013,12 +2312,16 @@ class _PlayingTableScreenState extends State<ThirteenCardPokerScreen> {
           content: const Text('Бүх энгийн + боолт тоглолт дууссан.'),
           actions: [
             TextButton(
-              onPressed: () => Navigator.of(dialogContext).pop(false),
+              onPressed: () => Navigator.of(dialogContext).pop('finish'),
               child: const Text('Дуусгах'),
             ),
-            ElevatedButton(
-              onPressed: () => Navigator.of(dialogContext).pop(true),
+            TextButton(
+              onPressed: () => Navigator.of(dialogContext).pop('replay'),
               child: const Text('Дахин тойрох'),
+            ),
+            ElevatedButton(
+              onPressed: () => Navigator.of(dialogContext).pop('bolt'),
+              child: const Text('Дундаа боох'),
             ),
           ],
         );
@@ -2027,8 +2330,13 @@ class _PlayingTableScreenState extends State<ThirteenCardPokerScreen> {
 
     if (!mounted) return;
 
-    if (shouldReplay == true) {
+    if (action == 'replay') {
       setState(_resetForReplayKeepingMoney);
+      return;
+    }
+
+    if (action == 'bolt') {
+      setState(_startMiddleBoltRound);
       return;
     }
 
@@ -2258,7 +2566,9 @@ class _PlayingTableScreenState extends State<ThirteenCardPokerScreen> {
       final normalizedText =
           (rawText.isEmpty || rawText == '-') ? '0' : rawText;
       final parsed = int.tryParse(normalizedText);
-      if (parsed == null) {
+      if (parsed == null || (parsed != 1331 && (parsed < 0 || parsed > 13))) {
+        ScaffoldMessenger.of(context).showSnackBar(const SnackBar(
+          content: Text('Нэг үеийн оноо 0–13 байна. Оноогоо засна уу.')));
         return false;
       }
 
@@ -2323,6 +2633,7 @@ class _PlayingTableScreenState extends State<ThirteenCardPokerScreen> {
   }
 
   Future<void> _onEighthCellSubmitted(int index) async {
+    if (!_canEditLiveTable) return;
     final activeCells = _activeEighthCellCount;
     if (index < 0 || index >= activeCells) return;
 
@@ -2340,11 +2651,7 @@ class _PlayingTableScreenState extends State<ThirteenCardPokerScreen> {
     });
 
     if (!readyToCommit) {
-      // Incomplete row on last-cell Enter: clear draft values and restart from 1.
-      setState(() {
-        _clearEighthDraftStateForActivePlayers();
-        _clearActiveEighthInputs();
-      });
+      // Keep entered values available for correction after validation fails.
       _focusEighthCell(0);
       return;
     }
@@ -2362,6 +2669,7 @@ class _PlayingTableScreenState extends State<ThirteenCardPokerScreen> {
       return;
     }
 
+    if (!await _validateHandBeforeCommit(tablePlayers)) return;
     setState(() {
       _commitHandScoresToTotals(tablePlayers);
       _applyImmediateLoserMoneyUpdates(tablePlayers);
@@ -2552,9 +2860,7 @@ class _PlayingTableScreenState extends State<ThirteenCardPokerScreen> {
   }
 
   Future<void> _applyPostCommitMovement(List<String> tablePlayers) async {
-    if (widget.gameType != '13 МОДНЫ ПОКЕР' ||
-        tablePlayers.length < 5 ||
-        tablePlayers.length > 7) {
+    if (widget.gameType != '13 МОДНЫ ПОКЕР' || tablePlayers.length < 5) {
       if (!mounted) return;
       setState(() {
         _advanceBenchByRoundScores(tablePlayers);
@@ -2589,128 +2895,47 @@ class _PlayingTableScreenState extends State<ThirteenCardPokerScreen> {
     }
   }
 
-  Future<List<String>?> _showTieBreakOrderDialog(
-      List<String> tiedUserIds) async {
-    final tiedDisplayNames = List<String>.generate(
-      tiedUserIds.length,
-      (index) => _displayNameForUserId(tiedUserIds[index], index),
-    );
+  List<String> _confirmedTieOrder = [];
 
-    final tiedUserNames = tiedUserIds.map(_usernameForUserId).toList();
-    final selectedOrder = List<int?>.filled(tiedUserIds.length, null);
-    int currentOrder = 1;
-
-    final orderedIndices = await showDialog<List<int>>(
-      context: context,
-      barrierDismissible: false,
-      builder: (dialogContext) {
-        return StatefulBuilder(
-          builder: (context, setState) {
-            return AlertDialog(
-              title: const Text('Тэнцсэн онооны дараалал'),
-              content: SizedBox(
-                width: 420,
-                child: Column(
-                  mainAxisSize: MainAxisSize.min,
-                  children: [
-                    const Text(
-                      'Тэнцсэн тоглогчдыг дарааллаар эрэмбэлнэ. Эхний дугааруудаас С блокуудад шилжинэ.',
-                    ),
-                    const SizedBox(height: 12),
-                    for (int i = 0; i < tiedUserIds.length; i++)
-                      ListTile(
-                        dense: true,
-                        shape: RoundedRectangleBorder(
-                          borderRadius: BorderRadius.circular(8),
-                          side: BorderSide(
-                            color: selectedOrder[i] != null
-                                ? Colors.blue
-                                : Colors.grey.shade300,
-                          ),
-                        ),
-                        leading: CircleAvatar(
-                          radius: 14,
-                          backgroundColor: selectedOrder[i] != null
-                              ? Colors.blue
-                              : Colors.grey.shade400,
-                          child: Text(
-                            selectedOrder[i]?.toString() ?? '-',
-                            style: const TextStyle(
-                              color: Colors.white,
-                              fontSize: 12,
-                              fontWeight: FontWeight.bold,
-                            ),
-                          ),
-                        ),
-                        title: Text(
-                          tiedDisplayNames[i],
-                          style: const TextStyle(fontWeight: FontWeight.bold),
-                        ),
-                        subtitle: Text(tiedUserNames[i]),
-                        onTap: () {
-                          if (selectedOrder[i] == null &&
-                              currentOrder <= tiedUserIds.length) {
-                            setState(() {
-                              selectedOrder[i] = currentOrder;
-                              currentOrder++;
-                            });
-                          } else if (selectedOrder[i] != null) {
-                            setState(() {
-                              final removedOrder = selectedOrder[i]!;
-                              selectedOrder[i] = null;
-                              for (int j = 0; j < selectedOrder.length; j++) {
-                                if (selectedOrder[j] != null &&
-                                    selectedOrder[j]! > removedOrder) {
-                                  selectedOrder[j] = selectedOrder[j]! - 1;
-                                }
-                              }
-                              currentOrder--;
-                            });
-                          }
-                        },
-                      ),
-                  ],
-                ),
-              ),
-              actions: [
-                TextButton(
-                  onPressed: () => Navigator.of(dialogContext).pop(),
-                  child: const Text('Болих'),
-                ),
-                ElevatedButton(
-                  onPressed:
-                      selectedOrder.where((value) => value != null).length ==
-                              tiedUserIds.length
-                          ? () {
-                              final ordered =
-                                  List<int>.filled(tiedUserIds.length, 0);
-                              for (int i = 0; i < tiedUserIds.length; i++) {
-                                if (selectedOrder[i] != null) {
-                                  ordered[selectedOrder[i]! - 1] = i;
-                                }
-                              }
-                              Navigator.of(dialogContext).pop(ordered);
-                            }
-                          : null,
-                  child: const Text('Дараалал хадгалах'),
-                ),
-              ],
-            );
-          },
-        );
-      },
-    );
-
-    if (!mounted || orderedIndices == null || orderedIndices.isEmpty) {
-      return null;
+  Future<bool> _validateHandBeforeCommit(List<String> players) async {
+    final active = _scoringPlayersForTable(players);
+    if (active.any((id) => (_roundScores[id] ?? -1) < 0 || (_roundScores[id] ?? 14) > 13)) {
+      ScaffoldMessenger.of(context).showSnackBar(const SnackBar(
+        content: Text('Нэг үеийн оноо 0–13 байна. Оноогоо засна уу.')));
+      return false;
     }
+    if (active.where((id) => _roundScores[id] == 0).length != 1) {
+      ScaffoldMessenger.of(context).showSnackBar(const SnackBar(
+        content: Text('Зөвхөн нэг тоглогч 0 оноотой хожно. Оноогоо засна уу.')));
+      return false;
+    }
+    _confirmedTieOrder = [];
+    if (players.length < 5) return true;
+    final groups = <int, List<String>>{};
+    for (final id in active) {
+      final score = _roundScores[id];
+      if (score != null && score != 0) groups.putIfAbsent(score, () => []).add(id);
+    }
+    for (final group in groups.values.where((g) => g.length > 1)) {
+      List<String>? chosen;
+      await showPlayerOrderDialog(group,
+        List.generate(group.length, (i) => _displayNameForUserId(group[i], i)),
+        (indices) => chosen = indices.map((i) => group[i]).toList(),
+        title: 'Оноо тэнцсэн тоглогчдын дарааллыг сонгоно уу', returnToScoresOnCancel: true);
+      if (!mounted || chosen == null) return false;
+      _confirmedTieOrder.addAll(chosen!);
+    }
+    return true;
+  }
 
-    return orderedIndices.map((index) => tiedUserIds[index]).toList();
+  Future<List<String>?> _showTieBreakOrderDialog(List<String> ids) async {
+    return List<String>.from(ids)..sort((a, b) =>
+      _confirmedTieOrder.indexOf(a).compareTo(_confirmedTieOrder.indexOf(b)));
   }
 
   Future<List<String>?> _buildSubstitutionReorderForCurrentTable(
       List<String> tablePlayers) async {
-    if (tablePlayers.length < 5 || tablePlayers.length > 7) return null;
+    if (tablePlayers.length < 5) return null;
 
     final substituteSlotCount = tablePlayers.length - 4;
     final pinned = _getPinnedSubstitutesForCurrentTable()
@@ -2748,15 +2973,13 @@ class _PlayingTableScreenState extends State<ThirteenCardPokerScreen> {
           .where((userId) => _roundScores.containsKey(userId))
           .toList();
 
-      final activeNonPinnedCount = tablePlayers
-          .where((userId) =>
-              !_isEliminatedByScore(userId) && !nextPinned.contains(userId))
-          .length;
-      // During elimination rounds, keep at least one score-based rotation
-      // before elimination seat replacement.
-      final rotatingSubstituteCount = (activeNonPinnedCount - 4).clamp(0, 3) < 1
-          ? 1
-          : (activeNonPinnedCount - 4).clamp(0, 3);
+      // Rotate substitutes into the best scorers' seats first. Displaced
+      // scorers can then fill eliminated seats when the bench is exhausted.
+      final incomingCapacity = availableSubstitutes.length.clamp(0, 3);
+      // The highest-scoring surviving player stays in their original seat.
+      // Only the other survivors may rotate or fill an eliminated seat.
+      final rotatingSubstituteCount = incomingCapacity.clamp(
+          0, (scoringMainPlayers.length - 1).clamp(0, 3));
 
       final movingToSubstituteByScore = <String>[];
       if (rotatingSubstituteCount > 0 && scoringMainPlayers.isNotEmpty) {
@@ -2851,8 +3074,8 @@ class _PlayingTableScreenState extends State<ThirteenCardPokerScreen> {
       }
 
       final nextSubstitutesAfterElimination = <String>[
-        ...scoreMovedApplied.where((userId) => !nextPinned.contains(userId)),
         ...remainingSubstitutes,
+        ...scoreMovedApplied.where((userId) => !nextPinned.contains(userId)),
       ];
 
       _setPinnedSubstitutesForCurrentTable(nextPinned);
@@ -2955,10 +3178,10 @@ class _PlayingTableScreenState extends State<ThirteenCardPokerScreen> {
     }
 
     final nextSubstitutes = <String>[
+      ...availableSubstitutes.skip(movedOutCount),
       ...movingToSubstitute
           .take(movedOutCount)
           .where((userId) => !nextPinned.contains(userId)),
-      ...availableSubstitutes.skip(movedOutCount),
     ];
 
     _setPinnedSubstitutesForCurrentTable(nextPinned);
@@ -3094,6 +3317,12 @@ class _PlayingTableScreenState extends State<ThirteenCardPokerScreen> {
     if (_isResolvingRound || !mounted) return;
     if (!roundPlayers.contains(winnerUserId)) return;
 
+    _isResolvingRound = true;
+    if (isInstantSpecialWin) {
+      await _flashConsecutive13Celebration(winnerUserId);
+      if (!mounted) return;
+    }
+
     if (widget.autoReturnOnWinner && !_multiAutoReturnTriggered) {
       _multiAutoReturnTriggered = true;
       WidgetsBinding.instance.addPostFrameCallback((_) {
@@ -3108,7 +3337,6 @@ class _PlayingTableScreenState extends State<ThirteenCardPokerScreen> {
 
     final wasBoltRound = _isBoltMode;
 
-    _isResolvingRound = true;
     final loserUserIds =
         roundPlayers.where((userId) => userId != winnerUserId).toList();
 
@@ -3186,11 +3414,7 @@ class _PlayingTableScreenState extends State<ThirteenCardPokerScreen> {
       }
 
       if (decision == 'bolt') {
-        setState(() {
-          _middleTieDecisionMade = true;
-          _isBoltMode = true;
-          _boltRoundNumber = 1;
-        });
+        setState(_startMiddleBoltRound);
       }
     }
 
@@ -3252,6 +3476,12 @@ class _PlayingTableScreenState extends State<ThirteenCardPokerScreen> {
       final rawText = (submittedText ?? controller.text).trim();
       final parsed = int.tryParse(rawText);
 
+      if (parsed != null && parsed != 1331 && (parsed < 0 || parsed > 13)) {
+        ScaffoldMessenger.of(context).showSnackBar(const SnackBar(
+          content: Text('Нэг үеийн оноо 0–13 байна. Оноогоо засна уу.')));
+        return;
+      }
+
       if (_isSpecialInstantWinInput(rawText) || parsed == 1331) {
         _clearScoreInput(userId);
         await _completeRoundWithWinner(
@@ -3280,6 +3510,7 @@ class _PlayingTableScreenState extends State<ThirteenCardPokerScreen> {
         return;
       }
 
+      if (!await _validateHandBeforeCommit(tablePlayersAfterInput)) return;
       setState(() {
         _commitHandScoresToTotals(tablePlayersAfterInput);
         _applyImmediateLoserMoneyUpdates(tablePlayersAfterInput);
@@ -3326,11 +3557,63 @@ class _PlayingTableScreenState extends State<ThirteenCardPokerScreen> {
     return 'Тоглогч ${fallbackIndex + 1}';
   }
 
+  String _celebrationNameForUserId(String userId) {
+    final profile = _userProfiles[userId];
+    final nickname = (profile?['nickname'] ?? '').toString().trim();
+    final lastName = (profile?['lastName'] ?? '').toString().trim();
+    final firstName = (profile?['firstName'] ?? '').toString().trim();
+    final fullName =
+        [lastName, firstName].where((part) => part.isNotEmpty).join('.');
+
+    if (nickname.isNotEmpty && fullName.isNotEmpty) {
+      return '$nickname, $fullName';
+    }
+    if (nickname.isNotEmpty) return nickname;
+    if (fullName.isNotEmpty) return fullName;
+    return _displayNameForUserId(userId, 0);
+  }
+
+  Future<void> _flashConsecutive13Celebration(String winnerUserId) async {
+    try {
+      _consecutive13CelebrationCount =
+          await StatsRepository().incrementAchievement(
+        winnerUserId,
+        'consecutive13',
+      );
+    } catch (_) {
+      _consecutive13CelebrationCount += 1;
+    }
+    if (!mounted) return;
+
+    _consecutive13CelebrationText =
+        '${_celebrationNameForUserId(winnerUserId)} ДАРААЛСАН 13 ХИЙЛЭЭ';
+
+    for (var flash = 0; flash < 3; flash++) {
+      if (!mounted) return;
+      setState(() => _showConsecutive13Celebration = true);
+      await Future<void>.delayed(const Duration(milliseconds: 260));
+      if (!mounted) return;
+      setState(() => _showConsecutive13Celebration = false);
+      await Future<void>.delayed(const Duration(milliseconds: 160));
+    }
+  }
+
   String? _photoUrlForUserId(String userId) {
     final profile = _userProfiles[userId];
     final photoUrl = (profile?['photoUrl'] ?? '').toString().trim();
-    if (photoUrl.isEmpty) return null;
+    if (photoUrl.isEmpty) {
+      final encoded = profile?['avatarBase64'];
+      if (encoded is String && encoded.isNotEmpty) return 'data:image/jpeg;base64,$encoded';
+      return null;
+    }
     return photoUrl;
+  }
+
+  ImageProvider _profileImage(String url) {
+    if (url.startsWith('data:')) {
+      return MemoryImage(base64Decode(url.substring(url.indexOf(',') + 1)));
+    }
+    return NetworkImage(url);
   }
 
   void _refreshDisplayNamesFromProfiles() {
@@ -3365,14 +3648,14 @@ class _PlayingTableScreenState extends State<ThirteenCardPokerScreen> {
     if (uniqueIds.isEmpty) return;
 
     final fetched = <String, Map<String, dynamic>>{};
-    for (final chunk in _chunkIds(uniqueIds, 10)) {
-      final snapshot = await FirebaseFirestore.instance
-          .collection('users')
-          .where(FieldPath.documentId, whereIn: chunk)
-          .get();
-      for (final doc in snapshot.docs) {
-        fetched[doc.id] = doc.data();
-      }
+    for (final id in uniqueIds) {
+      final demo = DemoPlayers.profileForId(id);
+      if (demo != null) fetched[id] = demo;
+    }
+    final realIds = uniqueIds.where((id) => !DemoPlayers.isDemoId(id)).toList();
+    for (final id in realIds) {
+      final profile = await loadPlayerProfile(id);
+      if (profile != null) fetched[id] = profile;
     }
 
     if (!mounted) return;
@@ -3400,6 +3683,57 @@ class _PlayingTableScreenState extends State<ThirteenCardPokerScreen> {
       return currentTable == 1 ? _table1DisplayNames : _table2DisplayNames;
     }
     return _orderedDisplayNames;
+  }
+
+  _PokerTableRuntimeState _snapshotCurrentTableRuntime() {
+    return _PokerTableRuntimeState(
+      roundNumber: roundNumber,
+      isBoltMode: _isBoltMode,
+      boltRoundNumber: _boltRoundNumber,
+      middleTieDecisionMade: _middleTieDecisionMade,
+      currentBoltUserId: _currentBoltUserId,
+      completedBoltUserIds: Set<String>.from(_completedBoltUserIds),
+      eighthBlockInputs: _eighthBlockScoreControllers
+          .map((controller) => controller.text)
+          .toList(growable: false),
+    );
+  }
+
+  void _captureCurrentTableRuntime() {
+    _tableRuntimeStates[currentTable] = _snapshotCurrentTableRuntime();
+  }
+
+  void _restoreTableRuntime(int tableNumber) {
+    final state = _tableRuntimeStates[tableNumber] ?? _PokerTableRuntimeState();
+    roundNumber = state.roundNumber;
+    _isBoltMode = state.isBoltMode;
+    _boltRoundNumber = state.boltRoundNumber;
+    _middleTieDecisionMade = state.middleTieDecisionMade;
+    _currentBoltUserId = state.currentBoltUserId;
+    _completedBoltUserIds
+      ..clear()
+      ..addAll(state.completedBoltUserIds);
+    for (var index = 0; index < _eighthBlockScoreControllers.length; index++) {
+      _eighthBlockScoreControllers[index].text =
+          index < state.eighthBlockInputs.length
+              ? state.eighthBlockInputs[index]
+              : '';
+    }
+    _isResolvingRound = false;
+    _isSubmittingInlineScore = false;
+    _isProcessingEighthSubmit = false;
+  }
+
+  void _switchToTable(int tableNumber) {
+    if (tableNumber == currentTable) return;
+    if (tableNumber == 1 && _table1UserNames.isEmpty) return;
+    if (tableNumber == 2 && _table2UserNames.isEmpty) return;
+    setState(() {
+      _captureCurrentTableRuntime();
+      currentTable = tableNumber;
+      _restoreTableRuntime(tableNumber);
+    });
+    _focusEighthCell(0);
   }
 
   Future<void> _showBelowEightSplitDecisionDialog() async {
@@ -3492,6 +3826,7 @@ class _PlayingTableScreenState extends State<ThirteenCardPokerScreen> {
     final allIndices = List<int>.generate(_orderedUserNames.length, (i) => i);
     final table2Indices =
         allIndices.where((index) => !sortedTable1.contains(index)).toList();
+    final existingRuntime = _snapshotCurrentTableRuntime();
 
     setState(() {
       _table1UserNames = sortedTable1.map((i) => _orderedUserNames[i]).toList();
@@ -3502,8 +3837,17 @@ class _PlayingTableScreenState extends State<ThirteenCardPokerScreen> {
       _table2DisplayNames =
           table2Indices.map((i) => _orderedDisplayNames[i]).toList();
       _tableSplitSelected = true;
+      _tableCountDecisionMade = true;
       currentTable = 1;
+      _tableRuntimeStates
+        ..clear()
+        ..[1] = existingRuntime
+        ..[2] = _PokerTableRuntimeState();
+      _restoreTableRuntime(1);
     });
+
+    final registrarSelectionCompleted = await _showTableRegistrarModeDialog();
+    if (!registrarSelectionCompleted || !mounted) return;
 
     await showPlayerOrderDialog(
       _table1UserNames,
@@ -3521,9 +3865,7 @@ class _PlayingTableScreenState extends State<ThirteenCardPokerScreen> {
 
     if (!mounted || !_tableSplitSelected) return;
 
-    setState(() {
-      currentTable = 2;
-    });
+    _switchToTable(2);
 
     await showPlayerOrderDialog(
       _table2UserNames,
@@ -3540,9 +3882,489 @@ class _PlayingTableScreenState extends State<ThirteenCardPokerScreen> {
     );
 
     if (!mounted || !_tableSplitSelected) return;
+    _switchToTable(1);
+  }
+
+  Future<void> _showTableCountDecisionDialog() async {
+    if (_tableCountDecisionMade || _tableCountDecisionInProgress || !mounted) {
+      return;
+    }
+    _tableCountDecisionInProgress = true;
+    final decision = await showDialog<String>(
+      context: context,
+      barrierDismissible: false,
+      builder: (dialogContext) => AlertDialog(
+        title: const Text('Тоглох ширээг сонгох'),
+        content: Text(
+          '${_orderedUserNames.length} тоглогч сонгогдсон байна. Нэг ширээнд үргэлжлүүлэх үү, хоёр ширээнд хуваах уу?',
+        ),
+        actions: [
+          TextButton(
+            onPressed: () => Navigator.of(dialogContext).pop('single'),
+            child: const Text('1 ширээнд тоглох'),
+          ),
+          ElevatedButton(
+            onPressed: () => Navigator.of(dialogContext).pop('split'),
+            child: const Text('2 ширээнд хуваах'),
+          ),
+        ],
+      ),
+    );
+    _tableCountDecisionInProgress = false;
+    if (!mounted || decision == null) return;
+    if (decision == 'single') {
+      setState(() {
+        _tableCountDecisionMade = true;
+        _tableSplitSelected = false;
+        currentTable = 1;
+      });
+
+      if (widget.promptInitialPlayerOrder && !_playerOrderSelected) {
+        final playersBeforeOrdering = List<String>.from(_orderedUserNames);
+        await showPlayerOrderDialog(
+          playersBeforeOrdering,
+          List<String>.generate(
+            playersBeforeOrdering.length,
+            (index) => _displayNameForUserId(
+              playersBeforeOrdering[index],
+              index,
+            ),
+          ),
+          (orderedIndices) {
+            setState(() {
+              final selectedOrderUsers =
+                  orderedIndices.map((i) => playersBeforeOrdering[i]).toList();
+              _playerOrderSelected = true;
+              _orderedUserNames =
+                  _arrangePlayersForBoardLayout(selectedOrderUsers);
+              _refreshDisplayNamesFromProfiles();
+              playerCount = _orderedDisplayNames.length;
+            });
+          },
+        );
+      }
+
+      await _uploadChangedTableStates();
+      return;
+    }
+
+    final requiredForTable1 = _requiredTable1Count(_orderedDisplayNames.length);
+    await showTableSplitDialog(
+      _orderedUserNames.map(_usernameForUserId).toList(),
+      List<String>.from(_orderedDisplayNames),
+      requiredForTable1,
+      (table1Indices) => _applySplitAndPromptTableOrders(table1Indices),
+    );
+  }
+
+  Future<bool> _showTableRegistrarModeDialog() async {
+    var useSeparate = true;
+    String? table1Registrar = _preferredRegistrarForPlayers(_table1UserNames);
+    String? table2Registrar = _preferredRegistrarForPlayers(_table2UserNames);
+
+    final confirmed = await showDialog<bool>(
+      context: context,
+      barrierDismissible: false,
+      builder: (dialogContext) => StatefulBuilder(
+        builder: (context, setDialogState) {
+          Widget registrarDropdown({
+            required String label,
+            required List<String> players,
+            required String? value,
+            required ValueChanged<String?> onChanged,
+          }) {
+            return DropdownButtonFormField<String>(
+              initialValue: players.contains(value) ? value : null,
+              decoration: InputDecoration(
+                labelText: label,
+                border: const OutlineInputBorder(),
+              ),
+              items: players
+                  .map(
+                    (userId) => DropdownMenuItem<String>(
+                      value: userId,
+                      child: Text(_displayNameForUserId(userId, 0)),
+                    ),
+                  )
+                  .toList(),
+              onChanged: onChanged,
+            );
+          }
+
+          return AlertDialog(
+            title: const Text('Бүртгэл хөтлөгч сонгох'),
+            content: SizedBox(
+              width: 520,
+              child: Column(
+                mainAxisSize: MainAxisSize.min,
+                crossAxisAlignment: CrossAxisAlignment.start,
+                children: [
+                  RadioListTile<bool>(
+                    value: true,
+                    groupValue: useSeparate,
+                    title: const Text('Ширээ тус бүр өөр бүртгэгчтэй'),
+                    subtitle:
+                        const Text('Хоёр ширээг зэрэг хөтлөхөд тохиромжтой.'),
+                    onChanged: (value) =>
+                        setDialogState(() => useSeparate = value ?? true),
+                  ),
+                  RadioListTile<bool>(
+                    value: false,
+                    groupValue: useSeparate,
+                    title: const Text('Нэг бүртгэгч хоёр ширээг хөтлөх'),
+                    subtitle:
+                        const Text('Ширээнүүдийн хооронд шилжиж бүртгэнэ.'),
+                    onChanged: (value) =>
+                        setDialogState(() => useSeparate = value ?? false),
+                  ),
+                  const SizedBox(height: 12),
+                  if (useSeparate) ...[
+                    registrarDropdown(
+                      label: 'Ширээ №1-ийн бүртгэгч',
+                      players: _table1UserNames,
+                      value: table1Registrar,
+                      onChanged: (value) =>
+                          setDialogState(() => table1Registrar = value),
+                    ),
+                    const SizedBox(height: 12),
+                    registrarDropdown(
+                      label: 'Ширээ №2-ийн бүртгэгч',
+                      players: _table2UserNames,
+                      value: table2Registrar,
+                      onChanged: (value) =>
+                          setDialogState(() => table2Registrar = value),
+                    ),
+                  ] else
+                    registrarDropdown(
+                      label: 'Хоёр ширээний бүртгэгч',
+                      players: [..._table1UserNames, ..._table2UserNames],
+                      value: table1Registrar,
+                      onChanged: (value) => setDialogState(() {
+                        table1Registrar = value;
+                        table2Registrar = value;
+                      }),
+                    ),
+                ],
+              ),
+            ),
+            actions: [
+              ElevatedButton(
+                onPressed: table1Registrar == null ||
+                        (useSeparate && table2Registrar == null)
+                    ? null
+                    : () => Navigator.of(dialogContext).pop(true),
+                child: const Text('Үргэлжлүүлэх'),
+              ),
+            ],
+          );
+        },
+      ),
+    );
+
+    if (confirmed != true) return false;
     setState(() {
-      currentTable = 1;
+      _useSeparateTableRegistrars = useSeparate;
+      _tableRegistrarUserIds[1] = table1Registrar;
+      _tableRegistrarUserIds[2] =
+          useSeparate ? table2Registrar : table1Registrar;
     });
+    final lockId = _currentActiveTableLockId();
+    if (lockId != null) {
+      try {
+        await _activeTablesRepo.updatePokerTableRegistrars(
+          lockId,
+          useSeparateRegistrars: useSeparate,
+          registrarUserIds: _tableRegistrarUserIds,
+        );
+      } catch (_) {
+        if (mounted) {
+          ScaffoldMessenger.of(context).showSnackBar(
+            const SnackBar(
+              content: Text('Бүртгэгчийн сонголтыг серверт хадгалж чадсангүй.'),
+            ),
+          );
+        }
+      }
+    }
+    await _uploadChangedTableStates();
+    return true;
+  }
+
+  String? _preferredRegistrarForPlayers(List<String> players) {
+    if (players.isEmpty) return null;
+    if (_currentRegistrarUserId != null &&
+        players.contains(_currentRegistrarUserId)) {
+      return _currentRegistrarUserId;
+    }
+    final eligible = players.where(_isEligibleRegistrarUser);
+    return eligible.isNotEmpty ? eligible.first : players.first;
+  }
+
+  @override
+  void didChangeDependencies() {
+    super.didChangeDependencies();
+    final lockId = _currentActiveTableLockId();
+    if (!liveRepository.ready || lockId == null || lockId == _remoteSyncLockId)
+      return;
+    onLiveReady();
+  }
+
+  void _startRemoteTableSync(String lockId) {
+    _remoteSyncLockId = lockId;
+    _remoteTableStatesSubscription?.cancel();
+    _remoteTableStatesSubscription =
+        _gameSyncService.watchSession(lockId).listen((snapshots) {
+      _applyRemoteTableSnapshots(snapshots);
+      if (mounted) setState(() => _remoteSyncReady = true);
+    }, onError: (Object error) {
+      liveRepository.status.value = 'Ширээний синк холбогдсонгүй';
+    });
+    _remoteSyncTimer?.cancel();
+    _remoteSyncTimer = Timer.periodic(
+      const Duration(milliseconds: 400),
+      (_) => _uploadChangedTableStates(),
+    );
+    Future<void>.delayed(
+      const Duration(milliseconds: 700),
+      _uploadChangedTableStates,
+    );
+  }
+
+  bool _canCurrentDeviceWriteTable(int tableNumber) {
+    final currentUserId = widget.currentRegistrarUserId?.trim();
+    if (currentUserId == null || currentUserId.isEmpty) return false;
+    final assigned = _tableRegistrarUserIds[tableNumber]?.trim();
+    if (assigned == null || assigned.isEmpty) {
+      return currentUserId == _currentRegistrarUserId;
+    }
+    return assigned == currentUserId;
+  }
+
+  Map<String, dynamic> _buildRemoteTableState(int tableNumber) {
+    if (tableNumber == currentTable) _captureCurrentTableRuntime();
+    final players = !_tableSplitSelected
+        ? List<String>.from(_orderedUserNames)
+        : tableNumber == 1
+            ? List<String>.from(_table1UserNames)
+            : List<String>.from(_table2UserNames);
+    final playerSet = players.toSet();
+    Map<String, int> intsFor(Map<String, int> source) => Map.fromEntries(
+          source.entries.where((entry) => playerSet.contains(entry.key)),
+        );
+    return <String, dynamic>{
+      'gameType': widget.gameType,
+      'scoreLimit': _scoreLimit,
+      'boltScoreLimit': _boltScoreLimit,
+      'betAmount': _betAmount,
+      'boltBetAmount': _boltBetAmount,
+      'playerOrderSelected': _playerOrderSelected,
+      'currentRegistrarUserId': _currentRegistrarUserId,
+      'userProfiles': _userProfiles,
+      'forcedEliminated':
+          _forcedEliminatedUserIds.where(playerSet.contains).toList(),
+      'paidOutLosers':
+          _paidOutRoundLoserUserIds.where(playerSet.contains).toList(),
+      'uRankings': intsFor(_uRankings),
+      'scoreInputs': _scoreControllers.map((key, c) => MapEntry(key, c.text))
+        ..removeWhere((key, _) => !playerSet.contains(key)),
+      'tableSplitSelected': _tableSplitSelected,
+      'tableCountDecisionMade': _tableCountDecisionMade,
+      'useSeparateTableRegistrars': _useSeparateTableRegistrars,
+      'registrars': _tableRegistrarUserIds.map(
+        (table, userId) => MapEntry(table.toString(), userId),
+      ),
+      'players': players,
+      'runtime': (_tableRuntimeStates[tableNumber] ?? _PokerTableRuntimeState())
+          .toJson(),
+      'roundScores': intsFor(_roundScores),
+      'totalScores': intsFor(_totalScores),
+      'wins': intsFor(_winsByUserId),
+      'money': intsFor(_moneyByUserId),
+      'explicitZeroUsers':
+          _explicitZeroRoundUserIds.where(playerSet.contains).toList(),
+      'preferredBenchedUsers':
+          tableNumber == 1 ? _table1BenchedUserIds : _table2BenchedUserIds,
+      'pinnedSubstitutes': tableNumber == 1
+          ? _table1PinnedSubstituteUserIds
+          : _table2PinnedSubstituteUserIds,
+    };
+  }
+
+  Future<void> _uploadChangedTableStates() async {
+    final lockId = _remoteSyncLockId;
+    final writer = widget.currentRegistrarUserId?.trim();
+    if (!mounted || _applyingRemoteState || lockId == null || writer == null) {
+      return;
+    }
+    if (!_remoteSyncReady || _remoteUploadBusy) return;
+    _remoteUploadBusy = true;
+    try {
+      final tableNumbers = _tableSplitSelected ? const <int>[1, 2] : <int>[1];
+      for (final tableNumber in tableNumbers) {
+        if (!_canCurrentDeviceWriteTable(tableNumber)) continue;
+        final state = _buildRemoteTableState(tableNumber);
+        final hash = gameStateFingerprint(state);
+        if (_lastUploadedTableStateHashes[tableNumber] == hash) continue;
+        try {
+          _lastUploadedTableStateHashes[tableNumber] = hash;
+          final revision = await _gameSyncService.writeState(
+            sessionId: lockId,
+            stateKey: 'table_$tableNumber',
+            expectedRevision: _lastAppliedRemoteRevisions[tableNumber] ?? 0,
+            gameKey: '13_card_poker',
+            writerUserId: writer,
+            payload: state,
+          );
+          _lastAppliedRemoteRevisions[tableNumber] = revision;
+          liveRepository.status.value = 'Синк идэвхтэй';
+        } catch (_) {
+          _lastUploadedTableStateHashes.remove(tableNumber);
+          liveRepository.status.value =
+              'Төхөөрөмжид хадгалсан · ширээний синк хүлээж байна';
+        }
+      }
+    } finally {
+      _remoteUploadBusy = false;
+    }
+  }
+
+  void _applyRemoteTableSnapshots(List<GameSyncState> snapshots) {
+    if (!mounted) return;
+    for (final remote in snapshots) {
+      if (remote.gameKey != '13_card_poker' ||
+          !remote.key.startsWith('table_')) {
+        continue;
+      }
+      final tableNumber = int.tryParse(remote.key.substring('table_'.length));
+      final revision = remote.revision;
+      if (tableNumber == null || tableNumber < 1 || tableNumber > 2) continue;
+      if (revision <= (_lastAppliedRemoteRevisions[tableNumber] ?? 0)) continue;
+      final state = remote.payload;
+      final remoteHash = gameStateFingerprint(state);
+      if (_lastUploadedTableStateHashes[tableNumber] == remoteHash) {
+        _lastAppliedRemoteRevisions[tableNumber] = revision;
+        continue;
+      }
+      _applyRemoteTableState(tableNumber, revision, state);
+    }
+  }
+
+  void _applyRemoteTableState(
+    int tableNumber,
+    int revision,
+    Map<String, dynamic> state,
+  ) {
+    _applyingRemoteState = true;
+    setState(() {
+      final players = (state['players'] as List? ?? const <dynamic>[])
+          .whereType<String>()
+          .toList();
+      final oldPlayers =
+          (tableNumber == 1 ? _table1UserNames : _table2UserNames).toSet();
+      if (tableNumber == 1) {
+        _table1UserNames = players;
+      } else {
+        _table2UserNames = players;
+      }
+      _tableSplitSelected =
+          state['tableSplitSelected'] as bool? ?? _tableSplitSelected;
+      _tableCountDecisionMade =
+          state['tableCountDecisionMade'] as bool? ?? _tableCountDecisionMade;
+      _useSeparateTableRegistrars =
+          state['useSeparateTableRegistrars'] as bool? ??
+              _useSeparateTableRegistrars;
+      final registrars = Map<String, dynamic>.from(
+        state['registrars'] as Map? ?? const <String, dynamic>{},
+      );
+      _tableRegistrarUserIds[1] = registrars['1'] as String?;
+      _tableRegistrarUserIds[2] = registrars['2'] as String?;
+      _tableRuntimeStates[tableNumber] = _PokerTableRuntimeState.fromJson(
+        Map<String, dynamic>.from(
+          state['runtime'] as Map? ?? const <String, dynamic>{},
+        ),
+      );
+      final affectedPlayers = <String>{...oldPlayers, ...players};
+      void replaceInts(String key, Map<String, int> target) {
+        for (final userId in affectedPlayers) {
+          target.remove(userId);
+        }
+        final values = Map<String, dynamic>.from(
+          state[key] as Map? ?? const <String, dynamic>{},
+        );
+        for (final entry in values.entries) {
+          final value = entry.value;
+          if (value is num) target[entry.key] = value.toInt();
+        }
+      }
+
+      _scoreLimit = (state['scoreLimit'] as num?)?.toInt() ?? _scoreLimit;
+      _boltScoreLimit =
+          (state['boltScoreLimit'] as num?)?.toInt() ?? _boltScoreLimit;
+      _betAmount = (state['betAmount'] as num?)?.toInt() ?? _betAmount;
+      _boltBetAmount =
+          (state['boltBetAmount'] as num?)?.toInt() ?? _boltBetAmount;
+      _playerOrderSelected = state['playerOrderSelected'] == true;
+      _currentRegistrarUserId =
+          state['currentRegistrarUserId'] as String? ?? _currentRegistrarUserId;
+      final profiles = state['userProfiles'] as Map? ?? {};
+      for (final entry in profiles.entries) {
+        _userProfiles[entry.key.toString()] =
+            Map<String, dynamic>.from(entry.value as Map);
+      }
+      _forcedEliminatedUserIds
+        ..removeAll(affectedPlayers)
+        ..addAll(
+            (state['forcedEliminated'] as List? ?? []).whereType<String>());
+      _paidOutRoundLoserUserIds
+        ..removeAll(affectedPlayers)
+        ..addAll((state['paidOutLosers'] as List? ?? []).whereType<String>());
+      replaceInts('uRankings', _uRankings);
+      final inputs = state['scoreInputs'] as Map? ?? {};
+      for (final player in players) {
+        _scoreControllerFor(player).text = (inputs[player] ?? '').toString();
+      }
+      replaceInts('roundScores', _roundScores);
+      replaceInts('totalScores', _totalScores);
+      replaceInts('wins', _winsByUserId);
+      replaceInts('money', _moneyByUserId);
+      _explicitZeroRoundUserIds.removeAll(affectedPlayers);
+      _explicitZeroRoundUserIds.addAll(
+        (state['explicitZeroUsers'] as List? ?? const <dynamic>[])
+            .whereType<String>(),
+      );
+      final benched =
+          (state['preferredBenchedUsers'] as List? ?? const <dynamic>[])
+              .whereType<String>()
+              .toList();
+      final pinned = (state['pinnedSubstitutes'] as List? ?? const <dynamic>[])
+          .whereType<String>()
+          .toList();
+      if (tableNumber == 1) {
+        _table1BenchedUserIds
+          ..clear()
+          ..addAll(benched);
+        _table1PinnedSubstituteUserIds
+          ..clear()
+          ..addAll(pinned);
+      } else {
+        _table2BenchedUserIds
+          ..clear()
+          ..addAll(benched);
+        _table2PinnedSubstituteUserIds
+          ..clear()
+          ..addAll(pinned);
+      }
+      _orderedUserNames = <String>{
+        ..._table1UserNames,
+        ..._table2UserNames,
+      }.toList();
+      playerCount = _orderedUserNames.length;
+      _refreshDisplayNamesFromProfiles();
+      if (currentTable == tableNumber) _restoreTableRuntime(tableNumber);
+      _lastAppliedRemoteRevisions[tableNumber] = revision;
+      _lastUploadedTableStateHashes[tableNumber] = gameStateFingerprint(state);
+    });
+    _applyingRemoteState = false;
   }
 
   @override
@@ -3553,7 +4375,6 @@ class _PlayingTableScreenState extends State<ThirteenCardPokerScreen> {
       userNames = List<String>.from(widget.selectedUserIds);
       _orderedUserNames = List.from(userNames);
       _refreshDisplayNamesFromProfiles();
-      _loadUserProfilesByIds(_orderedUserNames);
     } else {
       userNames = [
         'user1',
@@ -3581,11 +4402,23 @@ class _PlayingTableScreenState extends State<ThirteenCardPokerScreen> {
     playerCount = _orderedDisplayNames.length;
     _sessionInitialPlayerCount = _orderedUserNames.length;
     _registerSessionUsers(_orderedUserNames);
-    _tryRestoreSavedSession();
+    initializeLiveGame(() async {
+      if (widget.selectedUserIds.isNotEmpty) {
+        await _loadUserProfilesByIds(_orderedUserNames);
+      }
+      if (mounted) await _tryRestoreSavedSession();
+    });
   }
 
   @override
   void dispose() {
+    _pokerSession++;
+    _pokerMic = false;
+    _pokerStable?.cancel();
+    _pokerSpeech.stop();
+    stopLiveGame();
+    _remoteSyncTimer?.cancel();
+    _remoteTableStatesSubscription?.cancel();
     for (final controller in _scoreControllers.values) {
       controller.dispose();
     }
@@ -3742,11 +4575,15 @@ class _PlayingTableScreenState extends State<ThirteenCardPokerScreen> {
                 .toList();
             _refreshDisplayNamesFromProfiles();
             if (currentTable == 2 && _table2UserNames.isEmpty) {
+              _captureCurrentTableRuntime();
               currentTable = 1;
+              _restoreTableRuntime(1);
             } else if (currentTable == 1 &&
                 _table1UserNames.isEmpty &&
                 _table2UserNames.isNotEmpty) {
+              _captureCurrentTableRuntime();
               currentTable = 2;
+              _restoreTableRuntime(2);
             }
             shouldAskBelowEightDecision =
                 previousPlayerCount >= 8 && playerCount < 8;
@@ -3979,11 +4816,7 @@ class _PlayingTableScreenState extends State<ThirteenCardPokerScreen> {
     final lockId = currentRouteName.substring('active-table:'.length).trim();
     if (lockId.isEmpty) return;
 
-    try {
-      await _saveProgress();
-    } catch (_) {
-      // Local save failure should not block table switching.
-    }
+    await liveRepository.checkpoint(saveLiveProgress);
     if (!mounted) return;
 
     final orderedIds = _orderedUserNames
@@ -3995,7 +4828,7 @@ class _PlayingTableScreenState extends State<ThirteenCardPokerScreen> {
       await _activeTablesRepo
           .updateActiveTableState(
             lockId,
-            savedSessionId: _activeSavedSessionId,
+            savedSessionId: liveRepository.checkpointId,
             playerUserIds: orderedIds.isEmpty ? null : orderedIds,
           )
           .timeout(const Duration(seconds: 2));
@@ -4299,7 +5132,9 @@ class _PlayingTableScreenState extends State<ThirteenCardPokerScreen> {
   }
 
   @override
-  Widget build(BuildContext context) {
+  Widget build(BuildContext context) => buildLiveGame(_buildPokerGame(context));
+
+  Widget _buildPokerGame(BuildContext context) {
     Color tableBgColor =
         currentTable == 1 ? Colors.blue[300]! : Colors.green[100]!;
     final hasFirestoreBackedSelection = widget.selectedUserIds.isNotEmpty;
@@ -4310,7 +5145,8 @@ class _PlayingTableScreenState extends State<ThirteenCardPokerScreen> {
     // Skip showing dialog if restoring from a saved session
     final isRestoringFromSavedSession = widget.initialSavedSessionId != null &&
         widget.initialSavedSessionId!.isNotEmpty;
-    if (widget.promptInitialPlayerOrder &&
+    if (_canEditLiveTable &&
+        widget.promptInitialPlayerOrder &&
         !_playerOrderSelected &&
         !isRestoringFromSavedSession &&
         profilesReadyForOrderedUsers &&
@@ -4339,28 +5175,24 @@ class _PlayingTableScreenState extends State<ThirteenCardPokerScreen> {
       });
     }
 
-    if (!_tableSplitSelected &&
+    if (_canEditLiveTable &&
+        !_tableSplitSelected &&
+        !_tableCountDecisionMade &&
+        !_tableCountDecisionInProgress &&
         profilesReadyForOrderedUsers &&
         _orderedDisplayNames.length > 7 &&
         ModalRoute.of(context)?.isCurrent == true) {
-      final requiredForTable1 =
-          _requiredTable1Count(_orderedDisplayNames.length);
       WidgetsBinding.instance.addPostFrameCallback((_) {
-        showTableSplitDialog(
-          _orderedUserNames.map(_usernameForUserId).toList(),
-          List<String>.from(_orderedDisplayNames),
-          requiredForTable1,
-          (table1Indices) {
-            _applySplitAndPromptTableOrders(table1Indices);
-          },
-        );
+        _showTableCountDecisionDialog();
       });
     }
 
-    if (widget.gameType == '13 МОДНЫ ПОКЕР') {
-      _maintainEighthScoreFocus();
-    } else {
-      _maintainActiveScoreFocus();
+    if (_canEditLiveTable) {
+      if (widget.gameType == '13 МОДНЫ ПОКЕР') {
+        _maintainEighthScoreFocus();
+      } else {
+        _maintainActiveScoreFocus();
+      }
     }
 
     return Scaffold(
@@ -4380,11 +5212,7 @@ class _PlayingTableScreenState extends State<ThirteenCardPokerScreen> {
               if (_tableSplitSelected && _table2UserNames.isNotEmpty) ...[
                 const SizedBox(width: 8),
                 ElevatedButton(
-                  onPressed: () {
-                    setState(() {
-                      currentTable = 1;
-                    });
-                  },
+                  onPressed: () => _switchToTable(1),
                   style: ElevatedButton.styleFrom(
                     backgroundColor:
                         currentTable == 1 ? Colors.blue : Colors.grey[300],
@@ -4397,11 +5225,7 @@ class _PlayingTableScreenState extends State<ThirteenCardPokerScreen> {
                 ),
                 const SizedBox(width: 4),
                 ElevatedButton(
-                  onPressed: () {
-                    setState(() {
-                      currentTable = 2;
-                    });
-                  },
+                  onPressed: () => _switchToTable(2),
                   style: ElevatedButton.styleFrom(
                     backgroundColor:
                         currentTable == 2 ? Colors.blue : Colors.grey[300],
@@ -4486,6 +5310,7 @@ class _PlayingTableScreenState extends State<ThirteenCardPokerScreen> {
             : null,
         onAddPlayer: playerCount < 14 ? _addPlayerFromAppBar : null,
         onSave: _saveProgress,
+          onCheckpoint: () => liveRepository.checkpoint(saveLiveProgress),
         onStatistics: _openStatisticsDashboard,
         onReport: _showSessionSummaryDialog,
         onPrint: _printSessionReport,
@@ -4493,6 +5318,7 @@ class _PlayingTableScreenState extends State<ThirteenCardPokerScreen> {
         onExit: _showExitDecisionDialog,
         preferCustomExitAction: true,
         extraActions: [
+          IconButton(onPressed: _togglePokerMic, icon: Icon(_pokerMic ? Icons.mic : Icons.mic_none, color: _pokerMic ? Colors.greenAccent : null)),
           IconButton(
             icon: Opacity(
               opacity: _canTransferRegistrarPermission ? 1 : 0.45,
@@ -4512,9 +5338,92 @@ class _PlayingTableScreenState extends State<ThirteenCardPokerScreen> {
           ),
         ],
       ),
-      body: Padding(
-        padding: const EdgeInsets.all(16.0),
-        child: buildGameTableUI(tableBgColor),
+      body: Stack(
+        children: [
+          Padding(
+            padding: const EdgeInsets.all(16.0),
+            child: ExcludeFocus(
+                excluding: !_canEditLiveTable,
+                child: AbsorbPointer(
+                    absorbing: !_canEditLiveTable,
+                    child: buildGameTableUI(tableBgColor))),
+          ),
+          if (_consecutive13CelebrationText.isNotEmpty)
+            Positioned.fill(
+              child: IgnorePointer(
+                child: AnimatedOpacity(
+                  opacity: _showConsecutive13Celebration ? 1 : 0,
+                  duration: const Duration(milliseconds: 120),
+                  child: ColoredBox(
+                    color: Colors.black54,
+                    child: Center(
+                      child: Container(
+                        constraints: const BoxConstraints(maxWidth: 760),
+                        margin: const EdgeInsets.all(24),
+                        padding: const EdgeInsets.symmetric(
+                          horizontal: 28,
+                          vertical: 22,
+                        ),
+                        decoration: BoxDecoration(
+                          color: const Color(0xE6112533),
+                          borderRadius: BorderRadius.circular(20),
+                          border: Border.all(
+                            color: const Color(0xFFFFD54F),
+                            width: 3,
+                          ),
+                          boxShadow: const [
+                            BoxShadow(
+                              color: Color(0x99FFD54F),
+                              blurRadius: 28,
+                              spreadRadius: 3,
+                            ),
+                          ],
+                        ),
+                        child: Row(
+                          mainAxisSize: MainAxisSize.min,
+                          children: [
+                            const Icon(
+                              Icons.star_rounded,
+                              color: Color(0xFFFFD54F),
+                              size: 38,
+                            ),
+                            const SizedBox(width: 12),
+                            Flexible(
+                              child: Text(
+                                _consecutive13CelebrationText,
+                                textAlign: TextAlign.center,
+                                style: const TextStyle(
+                                  color: Colors.white,
+                                  fontSize: 25,
+                                  fontWeight: FontWeight.w900,
+                                  letterSpacing: .5,
+                                ),
+                              ),
+                            ),
+                            const SizedBox(width: 12),
+                            const Icon(
+                              Icons.star_rounded,
+                              color: Color(0xFFFFD54F),
+                              size: 38,
+                            ),
+                            const SizedBox(width: 7),
+                            Text(
+                              '№$_consecutive13CelebrationCount',
+                              style: const TextStyle(
+                                color: Color(0xFFFFD54F),
+                                fontSize: 22,
+                                fontWeight: FontWeight.w900,
+                              ),
+                            ),
+                          ],
+                        ),
+                      ),
+                    ),
+                  ),
+                ),
+              ),
+            ),
+        ],
       ),
     );
   }
@@ -4553,7 +5462,7 @@ class _PlayingTableScreenState extends State<ThirteenCardPokerScreen> {
                       }
 
                       return Card(
-                        color: tableBgColor.withOpacity(0.3),
+                        color: tableBgColor.withValues(alpha: 0.3),
                         margin: EdgeInsets.zero,
                         shape: RoundedRectangleBorder(
                           borderRadius: BorderRadius.circular(8),
@@ -4622,7 +5531,7 @@ class _PlayingTableScreenState extends State<ThirteenCardPokerScreen> {
         vertical: compact ? 5 : 6,
       ),
       decoration: BoxDecoration(
-        color: Colors.white.withOpacity(0.08),
+        color: Colors.white.withValues(alpha: 0.08),
         borderRadius: BorderRadius.circular(999),
         border: Border.all(color: Colors.white24),
       ),
@@ -4633,7 +5542,7 @@ class _PlayingTableScreenState extends State<ThirteenCardPokerScreen> {
             radius: compact ? 10 : 12,
             backgroundColor: Colors.blueGrey.shade700,
             backgroundImage: (photoUrl != null && photoUrl.isNotEmpty)
-                ? NetworkImage(photoUrl)
+                ? _profileImage(photoUrl)
                 : null,
             child: (photoUrl == null || photoUrl.isEmpty)
                 ? Icon(
@@ -4838,7 +5747,12 @@ class _PlayingTableScreenState extends State<ThirteenCardPokerScreen> {
     );
   }
 
-  Widget buildPlayerBlock(int index, Color tableBgColor) {
+  Widget buildPlayerBlock(int index, Color tableBgColor) => VoicePlayerCue(
+      active: _pokerMic && !_pokerManual && index >= 0 &&
+          index < _activeUserNames.length && _activeUserNames[index] == _pokerTarget,
+      child: _buildPlayerBlockContent(index, tableBgColor));
+
+  Widget _buildPlayerBlockContent(int index, Color tableBgColor) {
     final userIdForBlock = (index >= 0 && _activeUserNames.length > index)
         ? _activeUserNames[index]
         : null;
@@ -4919,7 +5833,7 @@ class _PlayingTableScreenState extends State<ThirteenCardPokerScreen> {
           Widget cellContainer(Widget child) {
             return Container(
               decoration: BoxDecoration(
-                color: Colors.white.withOpacity(0.12),
+                color: Colors.white.withValues(alpha: 0.12),
                 borderRadius: BorderRadius.circular(8),
               ),
               child: child,
@@ -4934,7 +5848,7 @@ class _PlayingTableScreenState extends State<ThirteenCardPokerScreen> {
           }) {
             return Container(
               decoration: BoxDecoration(
-                color: Colors.white.withOpacity(0.4),
+                color: Colors.white.withValues(alpha: 0.4),
                 borderRadius: BorderRadius.circular(8),
                 border: Border.all(color: Colors.blueAccent, width: 2),
               ),
@@ -4993,8 +5907,7 @@ class _PlayingTableScreenState extends State<ThirteenCardPokerScreen> {
                                     borderRadius: BorderRadius.circular(8),
                                     child: (photoUrl != null &&
                                             photoUrl.isNotEmpty)
-                                        ? Image.network(
-                                            photoUrl,
+                                        ? Image(image: _profileImage(photoUrl),
                                             fit: BoxFit.cover,
                                             errorBuilder:
                                                 (context, error, stackTrace) =>
@@ -5154,7 +6067,7 @@ class _PlayingTableScreenState extends State<ThirteenCardPokerScreen> {
                       padding: const EdgeInsets.symmetric(
                           horizontal: 6, vertical: 2),
                       decoration: BoxDecoration(
-                        color: Colors.black.withOpacity(0.55),
+                        color: Colors.black.withValues(alpha: 0.55),
                         borderRadius: BorderRadius.circular(10),
                       ),
                       child: Row(
@@ -5266,8 +6179,8 @@ class _PlayingTableScreenState extends State<ThirteenCardPokerScreen> {
       padding: const EdgeInsets.symmetric(horizontal: 6, vertical: 4),
       decoration: BoxDecoration(
         color: isEnabled
-            ? Colors.white.withOpacity(0.4)
-            : Colors.white.withOpacity(0.2),
+            ? Colors.white.withValues(alpha: 0.4)
+            : Colors.white.withValues(alpha: 0.2),
         borderRadius: BorderRadius.circular(8),
         border: Border.all(
           color: isEnabled ? Colors.blueAccent : Colors.blueGrey,
@@ -5288,9 +6201,14 @@ class _PlayingTableScreenState extends State<ThirteenCardPokerScreen> {
           const SizedBox(height: 2),
           Expanded(
             child: Center(
-              child: TextField(
+              child: VoicePlayerCue(
+                active: _pokerMic && !_pokerManual && isEnabled && _activeEighthScoringUserIds[index] == _pokerTarget,
+                child: TextField(
                 controller: _eighthBlockScoreControllers[index],
                 focusNode: _eighthBlockFocusNodes[index],
+                onTap: () { _pokerStable?.cancel(); setState(() => _pokerManual = true); },
+                onChanged: (_) { _pokerStable?.cancel(); setState(() => _pokerManual = true); },
+                onEditingComplete: () {},
                 enabled: isEnabled,
                 readOnly: !isEnabled,
                 textAlign: TextAlign.center,
@@ -5312,8 +6230,12 @@ class _PlayingTableScreenState extends State<ThirteenCardPokerScreen> {
                   hintText: '-',
                 ),
                 onSubmitted: (_) {
+                  _pokerManual = false;
+                  _pokerTarget = null;
                   _submitEighthCellFromKeyboard(index);
+                  if (_pokerMic) _renewPokerSpeech();
                 },
+              ),
               ),
             ),
           ),
@@ -5338,7 +6260,7 @@ class _PlayingTableScreenState extends State<ThirteenCardPokerScreen> {
                       substitutionNumber: slot + 1,
                     )
                   : Card(
-                      color: tableBgColor.withOpacity(0.3),
+                      color: tableBgColor.withValues(alpha: 0.3),
                       margin: EdgeInsets.zero,
                       shape: RoundedRectangleBorder(
                         borderRadius: BorderRadius.circular(8),
@@ -5427,7 +6349,7 @@ class _PlayingTableScreenState extends State<ThirteenCardPokerScreen> {
                             width: 72,
                             height: 72,
                             decoration: BoxDecoration(
-                              color: Colors.white.withOpacity(0.4),
+                              color: Colors.white.withValues(alpha: 0.4),
                               borderRadius: BorderRadius.circular(8),
                               border: Border.all(
                                   color: Colors.blueAccent, width: 2),
@@ -5502,7 +6424,7 @@ class _PlayingTableScreenState extends State<ThirteenCardPokerScreen> {
   Future<void> showPlayerOrderDialog(
       List<String> playerUserIds,
       List<String> playerDisplayNames,
-      void Function(List<int>) onOrderConfirmed) async {
+      void Function(List<int>) onOrderConfirmed, {String title = 'Тоглогчийн дараалал сонгох', bool returnToScoresOnCancel = false}) async {
     List<int?> selectedOrder = List.filled(playerDisplayNames.length, null);
     int currentOrder = 1;
     await showDialog(
@@ -5518,7 +6440,7 @@ class _PlayingTableScreenState extends State<ThirteenCardPokerScreen> {
             final dialogWidth = playerDisplayNames.length * cardWidth +
                 (playerDisplayNames.length - 1) * cardSpacing;
             return AlertDialog(
-              title: const Text('Тоглогчийн дараалал сонгох'),
+              title: Text(title),
               content: SizedBox(
                 width: dialogWidth,
                 height: 220,
@@ -5584,8 +6506,7 @@ class _PlayingTableScreenState extends State<ThirteenCardPokerScreen> {
                                                       playerUserIds[i]);
                                               if (photoUrl != null &&
                                                   photoUrl.isNotEmpty) {
-                                                return Image.network(
-                                                  photoUrl,
+                                                return Image(image: _profileImage(photoUrl),
                                                   fit: BoxFit.cover,
                                                   errorBuilder: (context, error,
                                                       stackTrace) {
@@ -5611,8 +6532,9 @@ class _PlayingTableScreenState extends State<ThirteenCardPokerScreen> {
                                                 end: Alignment.bottomCenter,
                                                 colors: [
                                                   Colors.black
-                                                      .withOpacity(0.05),
-                                                  Colors.black.withOpacity(0.7),
+                                                      .withValues(alpha: 0.05),
+                                                  Colors.black
+                                                      .withValues(alpha: 0.7),
                                                 ],
                                               ),
                                             ),
@@ -5684,6 +6606,7 @@ class _PlayingTableScreenState extends State<ThirteenCardPokerScreen> {
                         TextButton(
                           onPressed: () {
                             Navigator.of(context).pop();
+                            if (returnToScoresOnCancel) return;
                             if (!mounted) return;
                             Navigator.of(this.context).pushAndRemoveUntil(
                               MaterialPageRoute(
@@ -5984,8 +6907,7 @@ class _PlayingTableScreenState extends State<ThirteenCardPokerScreen> {
                                                         players[i]);
                                                 if (photoUrl != null &&
                                                     photoUrl.isNotEmpty) {
-                                                  return Image.network(
-                                                    photoUrl,
+                                                  return Image(image: _profileImage(photoUrl),
                                                     fit: BoxFit.cover,
                                                     errorBuilder: (context,
                                                         error, stackTrace) {
@@ -6010,10 +6932,10 @@ class _PlayingTableScreenState extends State<ThirteenCardPokerScreen> {
                                                   begin: Alignment.topCenter,
                                                   end: Alignment.bottomCenter,
                                                   colors: [
+                                                    Colors.black.withValues(
+                                                        alpha: 0.05),
                                                     Colors.black
-                                                        .withOpacity(0.05),
-                                                    Colors.black
-                                                        .withOpacity(0.7),
+                                                        .withValues(alpha: 0.7),
                                                   ],
                                                 ),
                                               ),

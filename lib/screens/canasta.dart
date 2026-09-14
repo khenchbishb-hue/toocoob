@@ -1,6 +1,8 @@
+import '../utils/player_profiles.dart';
+import 'package:toocoob/utils/live_game_state.dart';
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
-import 'package:cloud_firestore/cloud_firestore.dart';
+
 import 'package:pdf/widgets.dart' as pw;
 import 'package:printing/printing.dart';
 import 'package:share_plus/share_plus.dart';
@@ -36,9 +38,24 @@ class CanastaPage extends StatefulWidget {
   State<CanastaPage> createState() => _CanastaPageState();
 }
 
-class _CanastaPageState extends State<CanastaPage> {
-  final SavedGameSessionsRepository _savedSessionsRepo =
-      SavedGameSessionsRepository();
+class _CanastaPageState extends State<CanastaPage>
+    with LiveGameState<CanastaPage> {
+  @override
+  LiveGameSessionsRepository get liveRepository => _savedSessionsRepo;
+  @override
+  String? get liveRegistrar => _currentRegistrarUserId;
+  @override
+  Future<void> saveLiveProgress() => _saveProgress();
+  @override
+  Future<void> restoreLiveProgress(SavedGameSession saved) async {
+    await _tryRestoreSavedSession(remote: saved);
+    _currentRegistrarUserId =
+        saved.payload['currentRegistrarUserId'] as String? ??
+            _currentRegistrarUserId;
+  }
+
+  final LiveGameSessionsRepository _savedSessionsRepo =
+      LiveGameSessionsRepository();
   final Map<String, _PlayerProfile> _profiles = {};
   bool _loading = true;
 
@@ -70,7 +87,7 @@ class _CanastaPageState extends State<CanastaPage> {
   void initState() {
     super.initState();
     _currentRegistrarUserId = widget.currentUserId;
-    _initializePage();
+    initializeLiveGame(_initializePage);
   }
 
   Future<void> _initializePage() async {
@@ -78,10 +95,10 @@ class _CanastaPageState extends State<CanastaPage> {
     await _loadProfiles();
   }
 
-  Future<void> _tryRestoreSavedSession() async {
-    final id = widget.initialSavedSessionId;
+  Future<void> _tryRestoreSavedSession({SavedGameSession? remote}) async {
+    final id = remote?.id ?? widget.initialSavedSessionId;
     if (id == null || id.isEmpty) return;
-    final saved = await _savedSessionsRepo.findById(id);
+    final saved = remote ?? await _savedSessionsRepo.findById(id);
     if (saved == null) return;
     if (!mounted) return;
     setState(() {
@@ -96,9 +113,7 @@ class _CanastaPageState extends State<CanastaPage> {
     for (final uid in ids) {
       if (uid.isEmpty) continue;
       try {
-        final snap =
-            await FirebaseFirestore.instance.collection('users').doc(uid).get();
-        final data = snap.data();
+        final data = await loadPlayerProfile(uid);
         if (data == null) continue;
         final displayName = (data['displayName'] ?? '').toString().trim();
         final username = (data['username'] ?? '').toString().trim();
@@ -231,7 +246,11 @@ class _CanastaPageState extends State<CanastaPage> {
       sessionId: _activeSavedSessionId,
       gameKey: 'canasta',
       gameLabel: 'Канастер',
-      selectedUserIds: List<String>.from(widget.selectedUserIds),
+      selectedUserIds: <String>{
+        ...widget.selectedUserIds,
+        ..._team1Ids,
+        ..._team2Ids
+      }.toList(),
       payload: payload,
     );
     _activeSavedSessionId = id;
@@ -507,7 +526,14 @@ class _CanastaPageState extends State<CanastaPage> {
     _sessionAddedToStatistics = true;
   }
 
+  @override
+  void onLiveReady() {
+    if (liveCanEdit && !_teamsAssigned && widget.selectedUserIds.length >= 2)
+      _showTeamSplitDialog();
+  }
+
   Future<void> _showTeamSplitDialog() async {
+    if (!liveCanEdit) return;
     final allIds = widget.selectedUserIds.where((id) => id.isNotEmpty).toList();
 
     final List<String> unassigned = List<String>.from(allIds);
@@ -564,10 +590,11 @@ class _CanastaPageState extends State<CanastaPage> {
                     padding: const EdgeInsets.all(8),
                     decoration: BoxDecoration(
                       color: highlight
-                          ? color.withOpacity(0.22)
-                          : color.withOpacity(0.07),
+                          ? color.withValues(alpha: 0.22)
+                          : color.withValues(alpha: 0.07),
                       border: Border.all(
-                        color: highlight ? color : color.withOpacity(0.35),
+                        color:
+                            highlight ? color : color.withValues(alpha: 0.35),
                         width: highlight ? 2.4 : 1.4,
                       ),
                       borderRadius: BorderRadius.circular(12),
@@ -578,7 +605,7 @@ class _CanastaPageState extends State<CanastaPage> {
                         Text(label,
                             style: TextStyle(
                                 fontWeight: FontWeight.bold,
-                                color: color.withOpacity(0.85))),
+                                color: color.withValues(alpha: 0.85))),
                         const SizedBox(height: 6),
                         if (members.isEmpty)
                           Text('Энд чирж оруулна уу',
@@ -749,6 +776,14 @@ class _CanastaPageState extends State<CanastaPage> {
     await _addCurrentSessionToStatisticsIfNeeded();
     await _removeSavedProgressIfAny();
     await _showWinDialog(winnerIndex);
+    if (!mounted) return;
+    if (widget.playingFormat != 'single') {
+      Navigator.of(context).pop(<String, dynamic>{
+        'completedGame': 'canasta',
+        'winnerUserIds': List<String>.from(winnerIds),
+      });
+      return;
+    }
     _resetRound();
   }
 
@@ -893,7 +928,9 @@ class _CanastaPageState extends State<CanastaPage> {
   }
 
   @override
-  Widget build(BuildContext context) {
+  Widget build(BuildContext context) => buildLiveGame(_buildGame(context));
+
+  Widget _buildGame(BuildContext context) {
     return Scaffold(
       appBar: UnifiedGameAppBar(
         currentUserId: widget.currentUserId,
@@ -950,6 +987,7 @@ class _CanastaPageState extends State<CanastaPage> {
           );
         },
         onSave: _saveProgress,
+          onCheckpoint: () => liveRepository.checkpoint(saveLiveProgress),
         onReport: _showSessionSummaryDialog,
         onSettings: _showSettingsDialog,
         onExit: _showSessionSummaryDialog,
@@ -1041,6 +1079,12 @@ class _CanastaPageState extends State<CanastaPage> {
                   ),
                 ),
     );
+  }
+
+  @override
+  void dispose() {
+    stopLiveGame();
+    super.dispose();
   }
 }
 
@@ -1234,6 +1278,23 @@ class _TeamScoreBlockState extends State<_TeamScoreBlock> {
     _syncCardCtrls();
   }
 
+  @override
+  void didUpdateWidget(covariant _TeamScoreBlock oldWidget) {
+    super.didUpdateWidget(oldWidget);
+    void update(TextEditingController controller, int value) {
+      if (int.tryParse(controller.text) != value)
+        controller.text = value.toString();
+    }
+
+    update(_cleanCanCtrl, widget.score.cleanCanastas);
+    update(_dirtyCanCtrl, widget.score.dirtyCanastas);
+    update(_drankCtrl, widget.score.dranksCount);
+    _syncCardCtrls();
+    for (var i = 0; i < _cardCtrls.length; i++) {
+      update(_cardCtrls[i], widget.score.cardsInHand[i].count);
+    }
+  }
+
   void _syncCardCtrls() {
     final cards = widget.score.cardsInHand;
     while (_cardCtrls.length < cards.length) {
@@ -1270,7 +1331,7 @@ class _TeamScoreBlockState extends State<_TeamScoreBlock> {
           style: TextStyle(
             fontSize: 13,
             fontWeight: FontWeight.w700,
-            color: widget.color.withOpacity(0.85),
+            color: widget.color.withValues(alpha: 0.85),
           ),
         ),
       );
@@ -1310,8 +1371,8 @@ class _TeamScoreBlockState extends State<_TeamScoreBlock> {
         border: bordered
             ? OutlineInputBorder(
                 borderRadius: BorderRadius.circular(10),
-                borderSide:
-                    BorderSide(color: color.withOpacity(0.65), width: 1.3),
+                borderSide: BorderSide(
+                    color: color.withValues(alpha: 0.65), width: 1.3),
               )
             : InputBorder.none,
         enabledBorder: bordered ? null : InputBorder.none,
@@ -1351,7 +1412,7 @@ class _TeamScoreBlockState extends State<_TeamScoreBlock> {
             children: [
               CircleAvatar(
                 radius: 36,
-                backgroundColor: widget.color.withOpacity(0.18),
+                backgroundColor: widget.color.withValues(alpha: 0.18),
                 backgroundImage: img,
                 child: img == null
                     ? Icon(Icons.person, size: 32, color: widget.color)
@@ -1445,9 +1506,9 @@ class _TeamScoreBlockState extends State<_TeamScoreBlock> {
     return Container(
       padding: const EdgeInsets.all(10),
       decoration: BoxDecoration(
-        color: totalColor.withOpacity(0.08),
+        color: totalColor.withValues(alpha: 0.08),
         borderRadius: BorderRadius.circular(12),
-        border: Border.all(color: totalColor.withOpacity(0.35)),
+        border: Border.all(color: totalColor.withValues(alpha: 0.35)),
       ),
       child: LayoutBuilder(
         builder: (context, constraints) {
@@ -1502,9 +1563,10 @@ class _TeamScoreBlockState extends State<_TeamScoreBlock> {
                   child: Container(
                     alignment: Alignment.center,
                     decoration: BoxDecoration(
-                      color: Colors.white.withOpacity(0.6),
+                      color: Colors.white.withValues(alpha: 0.6),
                       borderRadius: BorderRadius.circular(10),
-                      border: Border.all(color: totalColor.withOpacity(0.25)),
+                      border:
+                          Border.all(color: totalColor.withValues(alpha: 0.25)),
                     ),
                     child: FittedBox(
                       fit: BoxFit.contain,

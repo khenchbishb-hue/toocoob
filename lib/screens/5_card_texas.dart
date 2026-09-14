@@ -1,6 +1,10 @@
+import '../utils/win_voice_controller.dart';
+import '../widgets/voice_player_cue.dart';
+import '../utils/player_profiles.dart';
+import 'package:toocoob/utils/live_game_state.dart';
 import 'dart:math' as math;
 
-import 'package:cloud_firestore/cloud_firestore.dart';
+
 import 'package:flutter/material.dart';
 import 'package:pdf/widgets.dart' as pw;
 import 'package:printing/printing.dart';
@@ -34,9 +38,24 @@ class CardTexasPage extends StatefulWidget {
   State<CardTexasPage> createState() => _CardTexasPageState();
 }
 
-class _CardTexasPageState extends State<CardTexasPage> {
-  final SavedGameSessionsRepository _savedSessionsRepo =
-      SavedGameSessionsRepository();
+class _CardTexasPageState extends State<CardTexasPage>
+    with LiveGameState<CardTexasPage> {
+  @override
+  LiveGameSessionsRepository get liveRepository => _savedSessionsRepo;
+  @override
+  String? get liveRegistrar => _currentRegistrarUserId;
+  @override
+  Future<void> saveLiveProgress() => _saveProgress();
+  @override
+  Future<void> restoreLiveProgress(SavedGameSession saved) async {
+    await _tryRestoreSavedSession(remote: saved);
+    _currentRegistrarUserId =
+        saved.payload['currentRegistrarUserId'] as String? ??
+            _currentRegistrarUserId;
+  }
+
+  final LiveGameSessionsRepository _savedSessionsRepo =
+      LiveGameSessionsRepository();
   final ActiveTablesRepository _activeTablesRepo = ActiveTablesRepository();
   static const Color _tableColor = Color(0xFF0A3D62);
   static const int _maxSlots = 8;
@@ -70,17 +89,18 @@ class _CardTexasPageState extends State<CardTexasPage> {
     _players = _buildInitialPlayers(widget.selectedUserIds);
     _currentRegistrarUserId = widget.currentUserId;
 
-    _tryRestoreSavedSession();
-
-    if (widget.selectedUserIds.isNotEmpty) {
-      _loadSelectedUserProfiles();
-    }
+    initializeLiveGame(() async {
+      if (widget.selectedUserIds.isNotEmpty) {
+        await _loadSelectedUserProfiles();
+      }
+      if (mounted) await _tryRestoreSavedSession();
+    });
   }
 
-  Future<void> _tryRestoreSavedSession() async {
-    final id = widget.initialSavedSessionId;
+  Future<void> _tryRestoreSavedSession({SavedGameSession? remote}) async {
+    final id = remote?.id ?? widget.initialSavedSessionId;
     if (id == null || id.isEmpty) return;
-    final saved = await _savedSessionsRepo.findById(id);
+    final saved = remote ?? await _savedSessionsRepo.findById(id);
     if (saved == null || !mounted) return;
 
     final payload = saved.payload;
@@ -130,7 +150,11 @@ class _CardTexasPageState extends State<CardTexasPage> {
       sessionId: _activeSavedSessionId,
       gameKey: 'card_texas',
       gameLabel: '5 модны Техас',
-      selectedUserIds: List<String>.from(widget.selectedUserIds),
+      selectedUserIds: _players
+          .map((p) => p.userId)
+          .whereType<String>()
+          .where((id) => id.isNotEmpty)
+          .toList(),
       payload: payload,
     );
     _activeSavedSessionId = id;
@@ -219,11 +243,7 @@ class _CardTexasPageState extends State<CardTexasPage> {
       if (userId == null || userId.isEmpty) continue;
 
       try {
-        final snapshot = await FirebaseFirestore.instance
-            .collection('users')
-            .doc(userId)
-            .get();
-        final data = snapshot.data();
+        final data = await loadPlayerProfile(userId);
         if (data == null) continue;
 
         final username = (data['username'] as String?)?.trim();
@@ -391,6 +411,7 @@ class _CardTexasPageState extends State<CardTexasPage> {
   }
 
   void _changeWins(int index, int delta) {
+    final previousWins = index >= 0 && index < _players.length ? _players[index].wins : 0;
     if (index < 0 || index >= _players.length) return;
     setState(() {
       final player = _players[index];
@@ -398,6 +419,7 @@ class _CardTexasPageState extends State<CardTexasPage> {
       _players[index] = player.copyWith(wins: nextWins);
     });
 
+    _winVoice.receipt(index, _players[index].wins - previousWins);
     final winner = _winner;
     if (winner != null &&
         widget.autoReturnOnWinner &&
@@ -580,7 +602,9 @@ class _CardTexasPageState extends State<CardTexasPage> {
   }
 
   @override
-  Widget build(BuildContext context) {
+  Widget build(BuildContext context) => buildLiveGame(_buildGame(context));
+
+  Widget _buildGame(BuildContext context) {
     final winner = _winner;
 
     return Scaffold(
@@ -613,9 +637,12 @@ class _CardTexasPageState extends State<CardTexasPage> {
         onAddPlayer:
             _players.length >= _maxSlots ? null : _addPlayerFromSelection,
         onSave: _saveProgress,
+          onCheckpoint: () => liveRepository.checkpoint(saveLiveProgress),
         onReport: _showSessionSummaryDialog,
         onExit: _showSessionSummaryDialog,
         extraActions: [
+          IconButton(onPressed: liveCanEdit ? _winVoice.toggle : null, tooltip: 'Дуугаар хожил бүртгэх',
+            icon: Icon(_winVoice.enabled ? Icons.mic : Icons.mic_none, color: _winVoice.enabled ? Colors.greenAccent : null)),
           IconButton(
             tooltip: _canTransferRegistrar
                 ? 'Тоглолт бүртгэх эрх шилжүүлэх'
@@ -641,7 +668,7 @@ class _CardTexasPageState extends State<CardTexasPage> {
               width: double.infinity,
               padding: const EdgeInsets.symmetric(horizontal: 14, vertical: 12),
               decoration: BoxDecoration(
-                color: Colors.white.withOpacity(0.12),
+                color: Colors.white.withValues(alpha: 0.12),
                 borderRadius: BorderRadius.circular(14),
               ),
               child: Row(
@@ -721,7 +748,35 @@ class _CardTexasPageState extends State<CardTexasPage> {
     return _buildPlayerCard(_players[index], index);
   }
 
-  Widget _buildPlayerCard(_TargetWinPlayer player, int index) {
+  late final WinVoiceController _winVoice = WinVoiceController(
+    onGlobalCommand: (text) {
+      final threshold = parseWinThreshold(text);
+      if (threshold == null) return null;
+      if (threshold < 1 || threshold > _maxTargetWins) return 'Босго 1–$_maxTargetWins байна';
+      _setTargetWins(threshold);
+      return '✓ Хожлын босго: $threshold';
+    },
+    names: () => _players.map((p) => [p.displayName, p.username]).toList(),
+    canEdit: () => mounted && liveCanEdit && ModalRoute.of(context)?.isCurrent == true,
+    apply: (index, delta) {
+      if (index < 0 || index >= _players.length) return false;
+      final before = _players[index].wins;
+      _changeWins(index, delta);
+      return _players[index].wins != before;
+    },
+  )..addListener(_refreshVoice);
+  void _refreshVoice() { if (mounted) setState(() {}); }
+  @override
+  Widget? get liveCommandIndicator => _winVoice.indicator;
+  @override
+  Widget? get liveCommandHint => _winVoice.stopHint;
+  Widget _buildPlayerCard(_TargetWinPlayer player, int index) => VoicePlayerCue(
+    active: _winVoice.enabled && _winVoice.target == index,
+    child: Stack(fit: StackFit.passthrough, children: [
+      _buildPlayerCardContent(player, index),
+      if (_winVoice.receiptPlayer == index) Positioned(top: 12, left: 12, child: _winVoice.badge()),
+    ]));
+  Widget _buildPlayerCardContent(_TargetWinPlayer player, int index) {
     final isWinner = player.wins >= _targetWins;
     final borderColor = isWinner
         ? Colors.amber
@@ -732,11 +787,11 @@ class _CardTexasPageState extends State<CardTexasPage> {
       color: Colors.transparent,
       child: InkWell(
         borderRadius: BorderRadius.circular(14),
-        onTap: () => _changeWins(index, 1),
-        onLongPress: () => _changeWins(index, -1),
+        onTap: () { _winVoice.manual(); _changeWins(index, 1); },
+        onLongPress: () { _winVoice.manual(); _changeWins(index, -1); },
         child: Container(
           decoration: BoxDecoration(
-            color: Colors.black.withOpacity(0.35),
+            color: Colors.black.withValues(alpha: 0.35),
             borderRadius: BorderRadius.circular(14),
             border: Border.all(color: borderColor, width: 2.4),
           ),
@@ -878,7 +933,7 @@ class _CardTexasPageState extends State<CardTexasPage> {
   Widget _buildInactiveSlot() {
     return Container(
       decoration: BoxDecoration(
-        color: Colors.black.withOpacity(0.18),
+        color: Colors.black.withValues(alpha: 0.18),
         borderRadius: BorderRadius.circular(14),
       ),
       child: const Center(
@@ -897,6 +952,13 @@ class _CardTexasPageState extends State<CardTexasPage> {
       return NetworkImage(photoUrl);
     }
     return AssetImage('assets/$photoUrl');
+  }
+
+  @override
+  void dispose() {
+    _winVoice.dispose();
+    stopLiveGame();
+    super.dispose();
   }
 }
 

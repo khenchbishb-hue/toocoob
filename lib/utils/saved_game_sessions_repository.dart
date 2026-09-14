@@ -1,4 +1,5 @@
 import 'dart:convert';
+import 'dart:async';
 
 import 'package:shared_preferences/shared_preferences.dart';
 
@@ -26,12 +27,14 @@ class SavedGameSession {
   SavedGameSession copyWith({
     DateTime? updatedAt,
     Map<String, dynamic>? payload,
+    List<String>? selectedUserIds,
   }) {
     return SavedGameSession(
       id: id,
       gameKey: gameKey,
       gameLabel: gameLabel,
-      selectedUserIds: List<String>.from(selectedUserIds),
+      selectedUserIds:
+          List<String>.from(selectedUserIds ?? this.selectedUserIds),
       createdAt: createdAt,
       updatedAt: updatedAt ?? this.updatedAt,
       payload: payload ?? this.payload,
@@ -66,9 +69,20 @@ class SavedGameSession {
 }
 
 class SavedGameSessionsRepository {
+  SavedGameSessionsRepository({this.storageKey = kSavedGameSessionsKey});
+
+  final String storageKey;
+  static Future<void> _writeQueue = Future<void>.value();
+  static Future<T> _serialize<T>(Future<T> Function() operation) {
+    final result = _writeQueue.then((_) => operation());
+    _writeQueue =
+        result.then<void>((_) {}, onError: (Object _, StackTrace __) {});
+    return result;
+  }
+
   Future<List<SavedGameSession>> loadSessions() async {
     final prefs = await SharedPreferences.getInstance();
-    final raw = prefs.getString(kSavedGameSessionsKey);
+    final raw = prefs.getString(storageKey);
     if (raw == null || raw.trim().isEmpty) return <SavedGameSession>[];
 
     try {
@@ -91,10 +105,24 @@ class SavedGameSessionsRepository {
       'updatedAt': DateTime.now().toIso8601String(),
       'sessions': sessions.map((e) => e.toJson()).toList(),
     };
-    await prefs.setString(kSavedGameSessionsKey, jsonEncode(payload));
+    await prefs.setString(storageKey, jsonEncode(payload));
   }
 
   Future<String> saveOrUpdate({
+    String? sessionId,
+    required String gameKey,
+    required String gameLabel,
+    required List<String> selectedUserIds,
+    required Map<String, dynamic> payload,
+  }) =>
+      _serialize(() => _saveOrUpdate(
+          sessionId: sessionId,
+          gameKey: gameKey,
+          gameLabel: gameLabel,
+          selectedUserIds: selectedUserIds,
+          payload: payload));
+
+  Future<String> _saveOrUpdate({
     String? sessionId,
     required String gameKey,
     required String gameLabel,
@@ -110,6 +138,7 @@ class SavedGameSessionsRepository {
       final existing = sessions[existingIndex];
       sessions[existingIndex] = existing.copyWith(
         updatedAt: now,
+        selectedUserIds: selectedUserIds,
         payload: payload,
       );
     } else {
@@ -138,7 +167,9 @@ class SavedGameSessionsRepository {
     return null;
   }
 
-  Future<void> removeById(String id) async {
+  Future<void> removeById(String id) => _serialize(() => _removeById(id));
+
+  Future<void> _removeById(String id) async {
     final sessions = await loadSessions();
     sessions.removeWhere((e) => e.id == id);
     await saveSessions(sessions);
@@ -161,5 +192,19 @@ class SavedGameSessionsRepository {
       }
     }
     return null;
+  }
+
+  Future<List<SavedGameSession>> findUnfinishedByPlayers(
+      List<String> selectedUserIds) async {
+    final target = selectedUserIds.toSet();
+    if (target.isEmpty) return [];
+    return (await loadSessions()).where((session) {
+      final players = session.selectedUserIds.toSet();
+      final p = session.payload;
+      return !session.id.startsWith('live_') &&
+          players.length == target.length && players.containsAll(target) &&
+          p['sessionCompleted'] != true && p['completed'] != true &&
+          p['championBlockIndex'] == null && p['winnerPlayerKey'] == null;
+    }).toList();
   }
 }
